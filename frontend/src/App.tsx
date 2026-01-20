@@ -6,7 +6,6 @@ import UploadStep from './components/UploadStep';
 import WaveformSelector from './components/WaveformSelector';
 import EffectControls from './components/EffectControls';
 import VideoPreview from './components/VideoPreview';
-import BrandPlaybook from './components/BrandPlaybook';
 import { Music, Image as ImageIcon, Sparkles } from 'lucide-react';
 
 export default function App() {
@@ -185,12 +184,6 @@ export default function App() {
       setError(err instanceof Error ? err.message : 'Failed to export video');
     }
   }, [sessionId]);
-  
-  // Go back to adjust
-  const handleBackToAdjust = useCallback(() => {
-    setCurrentStep(3);
-    setVideoReady(false);
-  }, []);
   
   const canGenerate = imageFile && audioFile && settings.end_time > settings.start_time;
   const selectedDuration = settings.end_time - settings.start_time;
@@ -410,9 +403,14 @@ export default function App() {
                 />
               </div>
               
-              {/* Playbook & Actions */}
+              {/* Controls & Actions */}
               <div className="space-y-6">
-                {playbook && <BrandPlaybook playbook={playbook} />}
+                <EffectControls
+                  motionIntensity={settings.motion_intensity}
+                  beatReactivity={settings.beat_reactivity}
+                  energyLevel={settings.energy_level}
+                  onChange={handleSettingsChange}
+                />
                 
                 <div className="space-y-3">
                   <button
@@ -423,10 +421,11 @@ export default function App() {
                   </button>
                   
                   <button
-                    onClick={handleBackToAdjust}
-                    className="w-full py-3 bg-white border border-surface-200 text-surface-700 font-medium rounded-xl hover:bg-surface-50 transition-colors"
+                    onClick={handleGenerate}
+                    disabled={isGenerating}
+                    className="w-full py-3 bg-white border border-surface-200 text-surface-700 font-medium rounded-xl hover:bg-surface-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Adjust & Re-render
+                    {isGenerating ? `Re-rendering... ${Math.round(progress)}%` : 'Re-render Video'}
                   </button>
                 </div>
               </div>
