@@ -29,6 +29,15 @@ class AudioFeatures:
     bass_energy: List[Tuple[float, float]]  # Low frequency energy over time
     mid_energy: List[Tuple[float, float]]  # Mid frequency energy over time
     high_energy: List[Tuple[float, float]]  # High frequency energy over time
+    
+    # Computed metrics for AI interpretation (no BPM-based assumptions)
+    onset_density: float = 0.0  # Onsets per second - indicates rhythmic activity
+    average_bass: float = 0.0  # Average bass energy (0-1)
+    average_mid: float = 0.0   # Average mid energy (0-1)
+    average_high: float = 0.0  # Average high energy (0-1)
+    dynamic_range: float = 0.0  # Difference between max and min energy
+    beat_strength_variance: float = 0.0  # How much beat strengths vary
+    average_energy: float = 0.0  # Overall average energy level
 
 
 def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = None) -> AudioFeatures:
@@ -103,6 +112,25 @@ def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = No
     mid_energy = list(zip(times.tolist(), mid_energy_values.tolist()))
     high_energy = list(zip(times.tolist(), high_energy_values.tolist()))
     
+    # Compute additional metrics for AI interpretation
+    # These are raw metrics - let AI interpret what they mean for effects
+    onset_density = len(onset_times) / actual_duration if actual_duration > 0 else 0.0
+    
+    # Average frequency band energies
+    avg_bass = float(np.mean(bass_energy_values)) if len(bass_energy_values) > 0 else 0.0
+    avg_mid = float(np.mean(mid_energy_values)) if len(mid_energy_values) > 0 else 0.0
+    avg_high = float(np.mean(high_energy_values)) if len(high_energy_values) > 0 else 0.0
+    
+    # Dynamic range (how much energy varies)
+    energy_values = [e[1] for e in energy_envelope]
+    dynamic_range = float(max(energy_values) - min(energy_values)) if energy_values else 0.0
+    
+    # Beat strength variance (are beats consistent or varied)
+    beat_variance = float(np.var(beat_strengths)) if len(beat_strengths) > 1 else 0.0
+    
+    # Average energy level
+    avg_energy = float(np.mean(energy_values)) if energy_values else 0.0
+    
     return AudioFeatures(
         duration=actual_duration,
         sample_rate=sr,
@@ -114,7 +142,14 @@ def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = No
         energy_envelope=energy_envelope,
         bass_energy=bass_energy,
         mid_energy=mid_energy,
-        high_energy=high_energy
+        high_energy=high_energy,
+        onset_density=onset_density,
+        average_bass=avg_bass,
+        average_mid=avg_mid,
+        average_high=avg_high,
+        dynamic_range=dynamic_range,
+        beat_strength_variance=beat_variance,
+        average_energy=avg_energy
     )
 
 

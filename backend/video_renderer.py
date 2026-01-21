@@ -1,6 +1,6 @@
 """
 Video Renderer Module
-Generates beat-reactive videos using FFmpeg and Pillow.
+Generates beat-reactive videos with 13 customizable effects using layer compositing.
 """
 
 import os
@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple, Dict, Any
 
 from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
 import numpy as np
@@ -33,7 +33,6 @@ ASPECT_DIMENSIONS = {
     AspectRatio.PORTRAIT: (1080, 1350),
 }
 
-# Preview uses half resolution for faster rendering
 PREVIEW_DIMENSIONS = {
     AspectRatio.VERTICAL: (540, 960),
     AspectRatio.SQUARE: (540, 540),
@@ -46,9 +45,101 @@ PREVIEW_DIMENSIONS = {
 class RenderSettings:
     aspect_ratio: AspectRatio = AspectRatio.VERTICAL
     fps: int = 30
-    quality: str = "medium"  # low, medium, high
+    quality: str = "medium"
     duration: float = 30.0
-    preview: bool = False  # Enable fast preview mode (half res, faster algorithms)
+    preview: bool = False
+
+
+@dataclass
+class Particle:
+    """A single particle for burst effects."""
+    x: float
+    y: float
+    vx: float
+    vy: float
+    size: float
+    color: Tuple[int, int, int]
+    alpha: float
+    birth_time: float
+    lifetime: float
+
+
+class ParticleSystem:
+    """Manages particle bursts."""
+    
+    def __init__(self):
+        self.particles: List[Particle] = []
+    
+    def spawn_burst(
+        self,
+        x: float, y: float,
+        count: int,
+        colors: List[Tuple[int, int, int]],
+        size_range: Tuple[float, float],
+        speed: float,
+        lifetime: float,
+        time: float
+    ):
+        """Spawn a burst of particles."""
+        for _ in range(count):
+            angle = random.random() * 2 * math.pi
+            velocity = speed * (0.5 + random.random() * 0.5)
+            
+            self.particles.append(Particle(
+                x=x,
+                y=y,
+                vx=math.cos(angle) * velocity,
+                vy=math.sin(angle) * velocity,
+                size=random.uniform(size_range[0], size_range[1]),
+                color=random.choice(colors),
+                alpha=0.8 + random.random() * 0.2,
+                birth_time=time,
+                lifetime=lifetime * (0.7 + random.random() * 0.3)
+            ))
+    
+    def update(self, time: float, dt: float):
+        """Update particle positions and remove dead particles."""
+        alive = []
+        for p in self.particles:
+            age = time - p.birth_time
+            if age < p.lifetime:
+                # Update position with gravity and drag
+                p.x += p.vx * dt
+                p.y += p.vy * dt
+                p.vy += 50 * dt  # Slight gravity
+                p.vx *= 0.98  # Drag
+                p.vy *= 0.98
+                alive.append(p)
+        self.particles = alive
+    
+    def draw(self, image: Image.Image, time: float) -> Image.Image:
+        """Draw all particles onto the image."""
+        if not self.particles:
+            return image
+        
+        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        
+        for p in self.particles:
+            age = time - p.birth_time
+            progress = age / p.lifetime
+            
+            # Fade out as particle ages
+            alpha = int(p.alpha * (1 - progress) * 255)
+            if alpha <= 0:
+                continue
+            
+            # Shrink as particle ages
+            size = p.size * (1 - progress * 0.5)
+            
+            x, y = int(p.x), int(p.y)
+            r = int(size / 2)
+            
+            if r > 0:
+                color = (*p.color, alpha)
+                draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+        
+        return Image.alpha_composite(image, overlay)
 
 
 def render_video(
@@ -58,10 +149,11 @@ def render_video(
     effect_params: EffectParameters,
     render_settings: RenderSettings,
     audio_start: float = 0.0,
-    progress_callback: Optional[Callable[[float], None]] = None
+    progress_callback: Optional[Callable[[float], None]] = None,
+    custom_particle_sprite: Optional[str] = None
 ) -> str:
     """
-    Render a beat-reactive video.
+    Render a beat-reactive video with 13 customizable effects.
     
     Args:
         image_path: Path to the source image
@@ -71,17 +163,18 @@ def render_video(
         render_settings: Quality and format settings
         audio_start: Start time in audio file
         progress_callback: Optional callback for progress updates
+        custom_particle_sprite: Optional path to custom particle sprite image
     
     Returns:
         Path to the rendered video
     """
-    # Get dimensions based on preview mode
+    # Get dimensions
     if render_settings.preview:
         width, height = PREVIEW_DIMENSIONS[render_settings.aspect_ratio]
-        resampling = Image.Resampling.BILINEAR  # Faster for preview
+        resampling = Image.Resampling.BILINEAR
     else:
         width, height = ASPECT_DIMENSIONS[render_settings.aspect_ratio]
-        resampling = Image.Resampling.LANCZOS  # Higher quality for export
+        resampling = Image.Resampling.LANCZOS
     
     fps = render_settings.fps
     duration = render_settings.duration
@@ -91,84 +184,223 @@ def render_video(
     base_image = Image.open(image_path).convert("RGBA")
     base_image = fit_image_to_frame(base_image, width, height, resampling)
     
-    # Create temporary directory for frames
+    # Load custom particle sprite if provided
+    particle_sprite = None
+    if custom_particle_sprite and os.path.exists(custom_particle_sprite):
+        try:
+            particle_sprite = Image.open(custom_particle_sprite).convert("RGBA")
+        except Exception:
+            pass
+    
+    # Initialize systems
+    particle_system = ParticleSystem()
+    previous_bursts = set()  # Track which bursts we've already spawned
+    
+    # Store echo trail frames
+    echo_frames: List[Image.Image] = []
+    
     with tempfile.TemporaryDirectory() as temp_dir:
         frame_pattern = os.path.join(temp_dir, "frame_%06d.png")
         
-        # Initialize particle system
-        particles = initialize_particles(width, height, effect_params.particles.density * 100 if effect_params.particles.enabled else 0)
-        
-        # Render each frame
         for frame_num in range(total_frames):
             time = frame_num / fps
+            dt = 1.0 / fps
             
             # Get effect values at this time
             effects = get_effect_value_at_time(effect_params, time)
+            bounds = effects.get("subject_bounds", {})
             
             # Start with base image
             frame = base_image.copy()
             
-            # Apply effects in order
-            frame = apply_zoom(frame, effects.get("zoom_scale", 1.0), width, height, resampling)
-            frame = apply_shake(frame, effects.get("shake_offset", (0, 0)), width, height)
-            frame = apply_blur(frame, effects.get("blur_amount", 0))
-            frame = apply_color_shift(
-                frame,
-                effects.get("color_warmth", 0),
-                effects.get("color_brightness", 0),
-                effects.get("color_saturation", 0)
-            )
-            
-            # Apply overlay effects
-            if effect_params.particles.enabled and effects.get("particle_density", 0) > 0:
-                particles = update_particles(particles, width, height, effect_params.particles.speed)
-                frame = apply_particles(
-                    frame, 
-                    particles, 
-                    effects.get("particle_density", 0.5),
-                    effects.get("particle_opacity", 0.3),
-                    effect_params.particles.size_range
+            # ================================================================
+            # LAYER 1: BACKGROUND WITH DIM AND BLUR
+            # ================================================================
+            if effects.get("background_dim_enabled", False):
+                frame = apply_background_dim(
+                    frame, bounds, 
+                    effects.get("background_dim_amount", 0),
+                    effects.get("background_blur", 0),
+                    width, height
                 )
             
-            if effect_params.geometric.enabled and effects.get("geometric_intensity", 0) > 0:
-                frame = apply_geometric(
+            # ================================================================
+            # LAYER 2: RIPPLE WAVE DISTORTION
+            # ================================================================
+            ripples = effects.get("ripple_waves", [])
+            if ripples:
+                for ripple in ripples:
+                    frame = apply_ripple_wave(
+                        frame, ripple, width, height,
+                        effects.get("ripple_intensity", 0.5)
+                    )
+            
+            # ================================================================
+            # LAYER 3: ELEMENT SCALE
+            # ================================================================
+            scale = effects.get("element_scale", 1.0)
+            if abs(scale - 1.0) > 0.001:
+                frame = apply_element_scale(frame, bounds, scale, width, height, resampling)
+            
+            # ================================================================
+            # LAYER 4: ELEMENT GLOW
+            # ================================================================
+            glow_intensity = effects.get("element_glow_intensity", 0)
+            if glow_intensity > 0.01:
+                frame = apply_element_glow(
+                    frame, bounds,
+                    glow_intensity,
+                    effects.get("element_glow_radius", 50),
+                    effects.get("element_glow_color", (255, 200, 100)),
+                    width, height
+                )
+            
+            # ================================================================
+            # LAYER 5: NEON OUTLINE
+            # ================================================================
+            outline_intensity = effects.get("neon_outline_intensity", 0)
+            if outline_intensity > 0.01:
+                frame = apply_neon_outline(
+                    frame, bounds,
+                    outline_intensity,
+                    effects.get("neon_outline_color", (0, 255, 255)),
+                    effects.get("neon_outline_width", 3),
+                    effects.get("neon_outline_glow", 10),
+                    width, height
+                )
+            
+            # ================================================================
+            # LAYER 6: ECHO TRAIL
+            # ================================================================
+            if effects.get("echo_trail_enabled", False):
+                frame = apply_echo_trail(
+                    frame, echo_frames,
+                    effects.get("echo_trail_count", 5),
+                    effects.get("echo_trail_decay", 0.7),
+                    effects.get("echo_trail_intensity", 0.5)
+                )
+            
+            # Store frame for echo effect
+            if effects.get("echo_trail_enabled", False):
+                echo_frames.append(frame.copy())
+                max_frames = effects.get("echo_trail_count", 5) + 2
+                if len(echo_frames) > max_frames:
+                    echo_frames.pop(0)
+            
+            # ================================================================
+            # LAYER 7: PARTICLE BURST
+            # ================================================================
+            bursts = effects.get("particle_bursts", [])
+            burst_params = effects.get("particle_burst_params", {})
+            
+            # Spawn new bursts
+            for i, burst in enumerate(bursts):
+                burst_id = (burst.get("origin_x", 0.5), burst.get("origin_y", 0.5), i)
+                if burst.get("progress", 0) < 0.1 and burst_id not in previous_bursts:
+                    previous_bursts.add(burst_id)
+                    particle_system.spawn_burst(
+                        x=burst.get("origin_x", 0.5) * width,
+                        y=burst.get("origin_y", 0.5) * height,
+                        count=burst_params.get("count", 50),
+                        colors=burst_params.get("colors", [(255, 200, 100)]),
+                        size_range=burst_params.get("size_range", (3, 12)),
+                        speed=burst_params.get("speed", 200),
+                        lifetime=burst_params.get("lifetime", 1.0) if "lifetime" in burst_params else 1.0,
+                        time=time
+                    )
+            
+            # Update and draw particles
+            particle_system.update(time, dt)
+            frame = particle_system.draw(frame, time)
+            
+            # Clean up old burst IDs
+            if len(previous_bursts) > 100:
+                previous_bursts.clear()
+            
+            # ================================================================
+            # LAYER 8: ENERGY TRAILS
+            # ================================================================
+            if effects.get("energy_trails_enabled", False):
+                frame = apply_energy_trails(
                     frame,
-                    effects.get("geometric_type", "lines"),
-                    effects.get("geometric_intensity", 0),
-                    effects.get("geometric_opacity", 0.2),
-                    effect_params.geometric.complexity,
-                    time
+                    effects.get("energy_trails_params", {}),
+                    width, height
                 )
             
+            # ================================================================
+            # LAYER 9: LIGHT FLARES
+            # ================================================================
+            flare_intensity = effects.get("light_flares_intensity", 0)
+            if flare_intensity > 0.01:
+                frame = apply_light_flares(
+                    frame,
+                    effects.get("light_flares_points", []),
+                    flare_intensity,
+                    effects.get("light_flares_size", 100),
+                    effects.get("light_flares_colors", [(255, 255, 200)]),
+                    width, height
+                )
+            
+            # ================================================================
+            # LAYER 10: GLITCH
+            # ================================================================
             if effects.get("glitch_active", False):
                 frame = apply_glitch(
                     frame,
                     effects.get("glitch_intensity", 0),
-                    effects.get("chromatic_aberration", 0)
+                    effects.get("glitch_chromatic", 0),
+                    effects.get("glitch_rgb_split", 0),
+                    effects.get("glitch_scan_lines", False),
+                    effects.get("glitch_scan_opacity", 0),
+                    effects.get("glitch_slice", False)
                 )
+            
+            # ================================================================
+            # LAYER 11: FILM GRAIN
+            # ================================================================
+            if effects.get("film_grain_enabled", False):
+                frame = apply_film_grain(
+                    frame,
+                    effects.get("film_grain_intensity", 0.2),
+                    effects.get("film_grain_size", 1.5)
+                )
+            
+            # ================================================================
+            # LAYER 12: STROBE FLASH
+            # ================================================================
+            if effects.get("strobe_active", False):
+                frame = apply_strobe_flash(
+                    frame,
+                    effects.get("strobe_intensity", 0.5),
+                    effects.get("strobe_color", (255, 255, 255))
+                )
+            
+            # ================================================================
+            # LAYER 13: VIGNETTE
+            # ================================================================
+            vignette_strength = effects.get("vignette_strength", 0)
+            if vignette_strength > 0.01:
+                frame = apply_vignette(frame, vignette_strength, width, height)
             
             # Convert to RGB and save
             frame = frame.convert("RGB")
             frame_path = frame_pattern % frame_num
             frame.save(frame_path, "PNG")
             
-            # Update progress
             if progress_callback:
-                progress_callback(frame_num / total_frames * 0.8)  # 80% for frames
+                progress_callback(frame_num / total_frames * 0.8)
         
         # Combine frames with audio using FFmpeg
         if progress_callback:
             progress_callback(0.85)
         
-        # Quality and encoding settings based on mode
         if render_settings.preview:
-            crf = 28  # Lower quality for fast preview
+            crf = 28
             preset = "ultrafast"
         else:
             crf = {"low": 28, "medium": 23, "high": 18}.get(render_settings.quality, 23)
-            preset = "slow"  # Better compression for final export
+            preset = "slow"
         
-        # FFmpeg command
         cmd = [
             "ffmpeg", "-y",
             "-framerate", str(fps),
@@ -205,18 +437,14 @@ def fit_image_to_frame(
     frame_ratio = width / height
     
     if img_ratio > frame_ratio:
-        # Image is wider - fit height, crop width
         new_height = height
         new_width = int(height * img_ratio)
     else:
-        # Image is taller - fit width, crop height
         new_width = width
         new_height = int(width / img_ratio)
     
-    # Resize
     resized = image.resize((new_width, new_height), resampling)
     
-    # Center crop
     left = (new_width - width) // 2
     top = (new_height - height) // 2
     cropped = resized.crop((left, top, left + width, top + height))
@@ -224,267 +452,484 @@ def fit_image_to_frame(
     return cropped
 
 
-def apply_zoom(
-    image: Image.Image, 
-    scale: float, 
-    width: int, 
-    height: int,
-    resampling: Image.Resampling = Image.Resampling.LANCZOS
+# ============================================================================
+# EFFECT IMPLEMENTATIONS
+# ============================================================================
+
+def apply_background_dim(
+    image: Image.Image,
+    bounds: Dict[str, float],
+    dim_amount: float,
+    blur_amount: float,
+    width: int, height: int
 ) -> Image.Image:
-    """Apply zoom effect by scaling and cropping."""
+    """Dim and blur the background outside the subject bounds."""
+    if dim_amount < 0.01 and blur_amount < 0.1:
+        return image
+    
+    # Create darkened/blurred version
+    bg = image.copy()
+    
+    if blur_amount > 0.1:
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=blur_amount))
+    
+    if dim_amount > 0.01:
+        enhancer = ImageEnhance.Brightness(bg)
+        bg = enhancer.enhance(1 - dim_amount)
+    
+    # Create mask for subject area (gradient for soft edges)
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    
+    x = int(bounds.get("x", 0.25) * width)
+    y = int(bounds.get("y", 0.25) * height)
+    w = int(bounds.get("w", 0.5) * width)
+    h = int(bounds.get("h", 0.5) * height)
+    
+    # Draw soft ellipse mask
+    padding = int(min(w, h) * 0.2)
+    draw.ellipse([x - padding, y - padding, x + w + padding, y + h + padding], fill=255)
+    
+    # Blur the mask for soft edges
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=padding))
+    
+    # Composite: bg where mask is 0, original where mask is 255
+    return Image.composite(image, bg, mask)
+
+
+def apply_ripple_wave(
+    image: Image.Image,
+    ripple: Dict[str, Any],
+    width: int, height: int,
+    intensity: float
+) -> Image.Image:
+    """Apply ripple wave distortion."""
+    if intensity < 0.01:
+        return image
+    
+    center_x = ripple.get("center_x", 0.5) * width
+    center_y = ripple.get("center_y", 0.5) * height
+    radius = ripple.get("radius", 100)
+    amplitude = ripple.get("amplitude", 10) * intensity
+    wavelength = ripple.get("wavelength", 50)
+    
+    if amplitude < 1:
+        return image
+    
+    # Convert to numpy for faster processing
+    img_array = np.array(image)
+    result = np.zeros_like(img_array)
+    
+    for y in range(height):
+        for x in range(width):
+            dx = x - center_x
+            dy = y - center_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            
+            if abs(dist - radius) < wavelength * 2:
+                # Apply ripple displacement
+                angle = math.atan2(dy, dx)
+                wave = math.sin((dist - radius) * 2 * math.pi / wavelength)
+                displacement = wave * amplitude * math.exp(-((dist - radius) / wavelength) ** 2)
+                
+                src_x = int(x + math.cos(angle) * displacement)
+                src_y = int(y + math.sin(angle) * displacement)
+                
+                src_x = max(0, min(width - 1, src_x))
+                src_y = max(0, min(height - 1, src_y))
+                
+                result[y, x] = img_array[src_y, src_x]
+            else:
+                result[y, x] = img_array[y, x]
+    
+    return Image.fromarray(result.astype('uint8'), mode=image.mode)
+
+
+def apply_element_scale(
+    image: Image.Image,
+    bounds: Dict[str, float],
+    scale: float,
+    width: int, height: int,
+    resampling: Image.Resampling
+) -> Image.Image:
+    """Scale the element area."""
     if abs(scale - 1.0) < 0.001:
         return image
     
-    # Scale image
-    new_width = int(image.width * scale)
-    new_height = int(image.height * scale)
+    # Get bounds
+    bx = int(bounds.get("x", 0.25) * width)
+    by = int(bounds.get("y", 0.25) * height)
+    bw = int(bounds.get("w", 0.5) * width)
+    bh = int(bounds.get("h", 0.5) * height)
     
-    scaled = image.resize((new_width, new_height), resampling)
+    # Expand bounds slightly for smoother effect
+    padding = int(min(bw, bh) * 0.1)
+    bx = max(0, bx - padding)
+    by = max(0, by - padding)
+    bw = min(width - bx, bw + padding * 2)
+    bh = min(height - by, bh + padding * 2)
     
-    # Center crop back to original size
-    left = (new_width - width) // 2
-    top = (new_height - height) // 2
+    # Extract and scale the element region
+    element = image.crop((bx, by, bx + bw, by + bh))
+    new_w = int(bw * scale)
+    new_h = int(bh * scale)
     
-    # Ensure we don't go out of bounds
-    left = max(0, left)
-    top = max(0, top)
-    
-    cropped = scaled.crop((left, top, left + width, top + height))
-    
-    # If cropped is smaller than needed, paste onto canvas
-    if cropped.size != (width, height):
-        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
-        paste_x = (width - cropped.width) // 2
-        paste_y = (height - cropped.height) // 2
-        canvas.paste(cropped, (paste_x, paste_y))
-        return canvas
-    
-    return cropped
-
-
-def apply_shake(image: Image.Image, offset: Tuple[float, float], width: int, height: int) -> Image.Image:
-    """Apply shake effect by offsetting the image."""
-    offset_x, offset_y = int(offset[0]), int(offset[1])
-    
-    if offset_x == 0 and offset_y == 0:
+    if new_w <= 0 or new_h <= 0:
         return image
     
-    # Create canvas and paste offset image
-    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
-    canvas.paste(image, (offset_x, offset_y))
+    scaled = element.resize((new_w, new_h), resampling)
     
-    return canvas
-
-
-def apply_blur(image: Image.Image, blur_amount: float) -> Image.Image:
-    """Apply Gaussian blur."""
-    if blur_amount < 0.1:
-        return image
+    # Center the scaled element
+    offset_x = (bw - new_w) // 2
+    offset_y = (bh - new_h) // 2
     
-    return image.filter(ImageFilter.GaussianBlur(radius=blur_amount))
-
-
-def apply_color_shift(
-    image: Image.Image, 
-    warmth: float, 
-    brightness: float, 
-    saturation: float
-) -> Image.Image:
-    """Apply color adjustments."""
-    result = image
-    
-    # Brightness
-    if abs(brightness) > 0.01:
-        enhancer = ImageEnhance.Brightness(result)
-        result = enhancer.enhance(1.0 + brightness)
-    
-    # Saturation
-    if abs(saturation) > 0.01:
-        enhancer = ImageEnhance.Color(result)
-        result = enhancer.enhance(1.0 + saturation)
-    
-    # Warmth (adjust color channels)
-    if abs(warmth) > 0.01:
-        r, g, b, a = result.split() if result.mode == "RGBA" else (*result.split(), None)
-        
-        # Warm = more red/yellow, Cool = more blue
-        r_adjust = int(warmth * 30)
-        b_adjust = int(-warmth * 20)
-        
-        r = r.point(lambda x: min(255, max(0, x + r_adjust)))
-        b = b.point(lambda x: min(255, max(0, x + b_adjust)))
-        
-        if a:
-            result = Image.merge("RGBA", (r, g, b, a))
-        else:
-            result = Image.merge("RGB", (r, g, b))
+    result = image.copy()
+    result.paste(scaled, (bx + offset_x, by + offset_y), scaled if scaled.mode == 'RGBA' else None)
     
     return result
 
 
-def initialize_particles(width: int, height: int, count: int) -> List[dict]:
-    """Initialize particle positions."""
-    particles = []
-    for _ in range(int(count)):
-        particles.append({
-            "x": random.random() * width,
-            "y": random.random() * height,
-            "vx": (random.random() - 0.5) * 2,
-            "vy": -random.random() * 2 - 0.5,  # Drift upward
-            "size": random.random(),
-            "alpha": random.random() * 0.5 + 0.3
-        })
-    return particles
-
-
-def update_particles(particles: List[dict], width: int, height: int, speed: float) -> List[dict]:
-    """Update particle positions."""
-    for p in particles:
-        p["x"] += p["vx"] * speed
-        p["y"] += p["vy"] * speed
-        
-        # Wrap around
-        if p["x"] < 0:
-            p["x"] = width
-        elif p["x"] > width:
-            p["x"] = 0
-        
-        if p["y"] < 0:
-            p["y"] = height
-            p["x"] = random.random() * width
-        elif p["y"] > height:
-            p["y"] = 0
-    
-    return particles
-
-
-def apply_particles(
+def apply_element_glow(
     image: Image.Image,
-    particles: List[dict],
-    density: float,
-    opacity: float,
-    size_range: Tuple[float, float]
-) -> Image.Image:
-    """Draw particles on image."""
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    
-    visible_count = int(len(particles) * density)
-    
-    for i, p in enumerate(particles[:visible_count]):
-        size = size_range[0] + p["size"] * (size_range[1] - size_range[0])
-        alpha = int(p["alpha"] * opacity * 255)
-        
-        x, y = int(p["x"]), int(p["y"])
-        r = int(size / 2)
-        
-        # Draw soft particle
-        draw.ellipse(
-            [x - r, y - r, x + r, y + r],
-            fill=(255, 255, 255, alpha)
-        )
-    
-    return Image.alpha_composite(image, overlay)
-
-
-def apply_geometric(
-    image: Image.Image,
-    shape_type: str,
+    bounds: Dict[str, float],
     intensity: float,
-    opacity: float,
-    complexity: float,
-    time: float
+    radius: float,
+    color: Tuple[int, int, int],
+    width: int, height: int
 ) -> Image.Image:
-    """Draw geometric shapes on image."""
-    if intensity < 0.05:
+    """Add a glow effect around the element."""
+    if intensity < 0.01:
         return image
     
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    # Create glow layer
+    glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(glow)
+    
+    cx = int(bounds.get("center_x", 0.5) * width)
+    cy = int(bounds.get("center_y", 0.5) * height)
+    bw = int(bounds.get("w", 0.5) * width)
+    bh = int(bounds.get("h", 0.5) * height)
+    
+    # Draw multiple ellipses for glow
+    for i in range(int(radius), 0, -5):
+        alpha = int(intensity * 100 * (i / radius))
+        glow_color = (*color, min(255, alpha))
+        
+        rx = bw // 2 + i
+        ry = bh // 2 + i
+        
+        draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=glow_color)
+    
+    # Blur the glow
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=radius / 3))
+    
+    return Image.alpha_composite(image, glow)
+
+
+def apply_neon_outline(
+    image: Image.Image,
+    bounds: Dict[str, float],
+    intensity: float,
+    color: Tuple[int, int, int],
+    line_width: float,
+    glow_radius: float,
+    width: int, height: int
+) -> Image.Image:
+    """Draw a neon outline around the element."""
+    if intensity < 0.01:
+        return image
+    
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    width, height = image.size
-    alpha = int(opacity * intensity * 255)
-    color = (255, 255, 255, alpha)
+    x = int(bounds.get("x", 0.25) * width)
+    y = int(bounds.get("y", 0.25) * height)
+    w = int(bounds.get("w", 0.5) * width)
+    h = int(bounds.get("h", 0.5) * height)
     
-    num_shapes = int(5 + complexity * 15)
+    alpha = int(intensity * 255)
+    outline_color = (*color, alpha)
     
-    if shape_type == "lines":
-        for i in range(num_shapes):
-            angle = (i / num_shapes) * math.pi + time * 0.5
-            cx, cy = width // 2, height // 2
-            length = min(width, height) * 0.4
-            
-            x1 = cx + math.cos(angle) * length
-            y1 = cy + math.sin(angle) * length
-            x2 = cx - math.cos(angle) * length
-            y2 = cy - math.sin(angle) * length
-            
-            draw.line([(x1, y1), (x2, y2)], fill=color, width=2)
+    # Draw outline
+    for offset in range(int(line_width)):
+        draw.ellipse(
+            [x - offset, y - offset, x + w + offset, y + h + offset],
+            outline=outline_color,
+            width=2
+        )
     
-    elif shape_type == "circles":
-        for i in range(num_shapes):
-            radius = (i + 1) / num_shapes * min(width, height) * 0.3 * intensity
-            cx, cy = width // 2, height // 2
-            
-            draw.ellipse(
-                [cx - radius, cy - radius, cx + radius, cy + radius],
-                outline=color,
-                width=2
-            )
+    # Add glow
+    glow_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_overlay)
     
-    elif shape_type == "grid":
-        spacing = int(50 / (complexity + 0.1))
-        offset = int((time * 20) % spacing)
+    for i in range(int(glow_radius), 0, -2):
+        glow_alpha = int(intensity * 50 * (i / glow_radius))
+        glow_color = (*color, glow_alpha)
+        glow_draw.ellipse(
+            [x - i, y - i, x + w + i, y + h + i],
+            outline=glow_color,
+            width=3
+        )
+    
+    glow_overlay = glow_overlay.filter(ImageFilter.GaussianBlur(radius=glow_radius / 2))
+    
+    result = Image.alpha_composite(image, glow_overlay)
+    return Image.alpha_composite(result, overlay)
+
+
+def apply_echo_trail(
+    image: Image.Image,
+    echo_frames: List[Image.Image],
+    trail_count: int,
+    decay: float,
+    intensity: float
+) -> Image.Image:
+    """Apply echo/ghost trail effect."""
+    if not echo_frames or intensity < 0.01:
+        return image
+    
+    result = image.copy()
+    
+    # Draw older frames with decreasing opacity
+    frames_to_use = echo_frames[-trail_count:]
+    for i, old_frame in enumerate(reversed(frames_to_use)):
+        age = i + 1
+        alpha = intensity * (decay ** age)
         
-        # Vertical lines
-        for x in range(-offset, width + spacing, spacing):
-            draw.line([(x, 0), (x, height)], fill=color, width=1)
+        if alpha < 0.05:
+            continue
         
-        # Horizontal lines
-        for y in range(-offset, height + spacing, spacing):
-            draw.line([(0, y), (width, y)], fill=color, width=1)
+        # Blend old frame
+        blend_frame = old_frame.copy()
+        blend_frame.putalpha(int(alpha * 255))
+        result = Image.alpha_composite(result, blend_frame)
+    
+    return result
+
+
+def apply_energy_trails(
+    image: Image.Image,
+    params: Dict[str, Any],
+    width: int, height: int
+) -> Image.Image:
+    """Draw energy trails orbiting the element."""
+    if not params:
+        return image
+    
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    count = params.get("count", 8)
+    colors = params.get("colors", [(255, 200, 100)])
+    trail_width = params.get("width", 2)
+    orbit_radius = params.get("orbit_radius", 100)
+    speed = params.get("speed", 1.0)
+    center_x = params.get("center_x", 0.5) * width
+    center_y = params.get("center_y", 0.5) * height
+    time = params.get("time", 0)
+    intensity = params.get("intensity", 0.5)
+    
+    for i in range(count):
+        base_angle = (i / count) * 2 * math.pi
+        angle = base_angle + time * speed * 2 * math.pi
+        
+        # Calculate trail positions
+        color = colors[i % len(colors)]
+        alpha = int(intensity * 200)
+        
+        # Draw trail as arc
+        trail_length = 0.3  # Radians
+        points = []
+        for t in np.linspace(0, trail_length, 20):
+            a = angle - t
+            r = orbit_radius * (1 - t / trail_length * 0.3)
+            px = center_x + math.cos(a) * r
+            py = center_y + math.sin(a) * r
+            points.append((px, py))
+        
+        # Draw with fading alpha
+        for j in range(len(points) - 1):
+            fade = 1 - j / len(points)
+            trail_alpha = int(alpha * fade)
+            trail_color = (*color, trail_alpha)
+            draw.line([points[j], points[j + 1]], fill=trail_color, width=int(trail_width))
+    
+    # Blur for glow effect
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=trail_width))
     
     return Image.alpha_composite(image, overlay)
 
 
-def apply_glitch(image: Image.Image, intensity: float, chromatic_aberration: float) -> Image.Image:
+def apply_light_flares(
+    image: Image.Image,
+    points: List[Tuple[float, float]],
+    intensity: float,
+    size: float,
+    colors: List[Tuple[int, int, int]],
+    width: int, height: int
+) -> Image.Image:
+    """Apply lens flare effect at specified points."""
+    if intensity < 0.01 or not points:
+        return image
+    
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    for i, (px, py) in enumerate(points):
+        x = int(px * width)
+        y = int(py * height)
+        color = colors[i % len(colors)]
+        
+        # Draw main flare
+        for r in range(int(size), 0, -5):
+            alpha = int(intensity * 150 * (r / size))
+            flare_color = (*color, alpha)
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=flare_color)
+        
+        # Draw horizontal streak
+        streak_length = int(size * 1.5)
+        for offset in range(-streak_length, streak_length, 2):
+            dist = abs(offset) / streak_length
+            alpha = int(intensity * 100 * (1 - dist))
+            streak_color = (*color, alpha)
+            draw.ellipse([x + offset - 3, y - 3, x + offset + 3, y + 3], fill=streak_color)
+    
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=size / 5))
+    
+    return Image.alpha_composite(image, overlay)
+
+
+def apply_glitch(
+    image: Image.Image,
+    intensity: float,
+    chromatic: float,
+    rgb_split: float,
+    scan_lines: bool,
+    scan_opacity: float,
+    slice_effect: bool
+) -> Image.Image:
     """Apply glitch effects."""
     if intensity < 0.05:
         return image
     
     result = image.copy()
+    width, height = result.size
     
-    # Chromatic aberration (RGB split)
-    if chromatic_aberration > 0.5:
-        offset = int(chromatic_aberration * intensity)
-        
-        r, g, b = result.convert("RGB").split()
-        
-        # Shift red channel left, blue channel right
-        r_shifted = Image.new("L", r.size, 0)
-        r_shifted.paste(r, (-offset, 0))
-        
-        b_shifted = Image.new("L", b.size, 0)
-        b_shifted.paste(b, (offset, 0))
-        
-        result = Image.merge("RGB", (r_shifted, g, b_shifted))
-        
-        if image.mode == "RGBA":
+    # RGB split / chromatic aberration
+    if chromatic > 0.5 or rgb_split > 0.5:
+        offset = int(max(chromatic, rgb_split) * intensity)
+        if offset > 0:
+            r, g, b = result.convert("RGB").split()
+            
+            r_shifted = Image.new("L", (width, height), 0)
+            r_shifted.paste(r, (-offset, 0))
+            
+            b_shifted = Image.new("L", (width, height), 0)
+            b_shifted.paste(b, (offset, 0))
+            
+            result = Image.merge("RGB", (r_shifted, g, b_shifted))
             result = result.convert("RGBA")
-            result.putalpha(image.split()[3])
     
-    # Random horizontal slice displacement
-    if intensity > 0.3:
-        width, height = result.size
-        num_slices = int(3 + intensity * 5)
+    # Scan lines
+    if scan_lines and scan_opacity > 0.01:
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         
+        alpha = int(scan_opacity * 255)
+        for y in range(0, height, 4):
+            draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha), width=1)
+        
+        result = Image.alpha_composite(result, overlay)
+    
+    # Slice displacement
+    if slice_effect and intensity > 0.3:
+        num_slices = int(3 + intensity * 5)
         for _ in range(num_slices):
             y = random.randint(0, height - 20)
             slice_height = random.randint(5, 20)
-            displacement = random.randint(-20, 20)
+            displacement = random.randint(-int(20 * intensity), int(20 * intensity))
             
-            slice_region = result.crop((0, y, width, y + slice_height))
-            result.paste(slice_region, (displacement, y))
+            if displacement != 0:
+                slice_region = result.crop((0, y, width, y + slice_height))
+                result.paste(slice_region, (displacement, y))
     
     return result
 
+
+def apply_film_grain(
+    image: Image.Image,
+    intensity: float,
+    grain_size: float
+) -> Image.Image:
+    """Apply film grain texture."""
+    if intensity < 0.01:
+        return image
+    
+    width, height = image.size
+    
+    # Create noise
+    noise = np.random.normal(0, intensity * 50, (height, width, 3)).astype(np.int16)
+    
+    # Apply to image
+    img_array = np.array(image.convert("RGB")).astype(np.int16)
+    result = np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    
+    result_img = Image.fromarray(result, mode="RGB").convert("RGBA")
+    
+    # Preserve alpha
+    if image.mode == "RGBA":
+        result_img.putalpha(image.split()[3])
+    
+    return result_img
+
+
+def apply_strobe_flash(
+    image: Image.Image,
+    intensity: float,
+    color: Tuple[int, int, int]
+) -> Image.Image:
+    """Apply strobe flash effect."""
+    if intensity < 0.01:
+        return image
+    
+    width, height = image.size
+    
+    # Create flash overlay
+    flash = Image.new("RGBA", (width, height), (*color, int(intensity * 200)))
+    
+    return Image.alpha_composite(image, flash)
+
+
+def apply_vignette(
+    image: Image.Image,
+    strength: float,
+    width: int, height: int
+) -> Image.Image:
+    """Apply vignette effect (darkened edges)."""
+    if strength < 0.01:
+        return image
+    
+    # Create vignette mask
+    mask = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(mask)
+    
+    cx, cy = width // 2, height // 2
+    max_dist = math.sqrt(cx * cx + cy * cy)
+    
+    for y in range(height):
+        for x in range(width):
+            dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            normalized_dist = dist / max_dist
+            
+            # Vignette curve
+            vignette = 1 - (normalized_dist ** 2) * strength
+            vignette = max(0, min(1, vignette))
+            
+            mask.putpixel((x, y), int(vignette * 255))
+    
+    # Apply vignette
+    darkened = image.copy()
+    enhancer = ImageEnhance.Brightness(darkened)
+    darkened = enhancer.enhance(0.3)
+    
+    return Image.composite(image, darkened, mask)

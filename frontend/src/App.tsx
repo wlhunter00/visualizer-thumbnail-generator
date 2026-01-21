@@ -1,12 +1,32 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Step, GenerateSettings, Playbook, ASPECT_RATIOS } from './types';
-import { createSession, uploadImage, uploadAudio, getWaveform, generateVideo, getGenerationStatus, exportVideo, getPreviewUrl, getDownloadUrl } from './api';
+import { 
+  Step, 
+  GenerateSettings, 
+  Playbook, 
+  ASPECT_RATIOS, 
+  EffectToggles, 
+  DEFAULT_EFFECT_TOGGLES,
+  ImageAnalysis 
+} from './types';
+import { 
+  createSession, 
+  uploadImage, 
+  uploadAudio, 
+  getWaveform, 
+  generateVideo, 
+  getGenerationStatus, 
+  exportVideo, 
+  getPreviewUrl, 
+  getDownloadUrl,
+  analyzeImage,
+  autoSuggest
+} from './api';
 import StepIndicator from './components/StepIndicator';
 import UploadStep from './components/UploadStep';
 import WaveformSelector from './components/WaveformSelector';
 import EffectControls from './components/EffectControls';
 import VideoPreview from './components/VideoPreview';
-import { Music, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { Music, Image as ImageIcon, Sparkles, Download, Loader2 } from 'lucide-react';
 
 export default function App() {
   // Session state
@@ -23,14 +43,19 @@ export default function App() {
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
   
-  // Settings state
+  // NEW: Image analysis state
+  const [imageAnalysis, setImageAnalysis] = useState<ImageAnalysis | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisAttempted, setAnalysisAttempted] = useState(false);
+  const [isAutoSuggesting, setIsAutoSuggesting] = useState(false);
+  
+  // Settings state - now using effect toggles
+  const [effectToggles, setEffectToggles] = useState<EffectToggles>(DEFAULT_EFFECT_TOGGLES);
   const [settings, setSettings] = useState<GenerateSettings>({
     start_time: 0,
     end_time: 30,
     aspect_ratio: '9:16',
-    motion_intensity: 50,
-    beat_reactivity: 50,
-    energy_level: 50,
+    effect_toggles: DEFAULT_EFFECT_TOGGLES,
   });
   
   // Generation state
@@ -39,6 +64,10 @@ export default function App() {
   const [videoReady, setVideoReady] = useState(false);
   const [playbook, setPlaybook] = useState<Playbook | null>(null);
   const [error, setError] = useState<string | null>(null);
+  
+  // Export state
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
   
   // Initialize session
   useEffect(() => {
@@ -63,6 +92,10 @@ export default function App() {
       setImageFile(file);
       
       await uploadImage(sessionId, file);
+      
+      // Reset analysis when new image uploaded
+      setImageAnalysis(null);
+      setAnalysisAttempted(false);
       
       // Auto-advance if audio is already uploaded
       if (audioFile) {
@@ -121,12 +154,68 @@ export default function App() {
     setSettings(s => ({ ...s, start_time: start, end_time: end }));
   }, []);
   
-  // Handle settings change
-  const handleSettingsChange = useCallback((key: keyof GenerateSettings, value: number | string) => {
-    setSettings(s => ({ ...s, [key]: value }));
-    // Reset video when settings change
+  // Handle aspect ratio change
+  const handleAspectRatioChange = useCallback((value: string) => {
+    setSettings(s => ({ ...s, aspect_ratio: value }));
     setVideoReady(false);
   }, []);
+  
+  // Handle effect toggles change
+  const handleEffectTogglesChange = useCallback((toggles: EffectToggles) => {
+    setEffectToggles(toggles);
+    setSettings(s => ({ ...s, effect_toggles: toggles }));
+    setVideoReady(false);
+  }, []);
+  
+  // NEW: Handle auto-suggest
+  const handleAutoSuggest = useCallback(async () => {
+    if (!sessionId) return;
+    
+    try {
+      setError(null);
+      setIsAutoSuggesting(true);
+      
+      const result = await autoSuggest(sessionId);
+      
+      // Update effect toggles with suggestions
+      setEffectToggles(result.effect_toggles);
+      setSettings(s => ({ ...s, effect_toggles: result.effect_toggles }));
+      
+      // Also update image analysis if we got it
+      // (auto-suggest runs image analysis if not already done)
+      if (!imageAnalysis) {
+        try {
+          const analysisResult = await analyzeImage(sessionId);
+          setImageAnalysis(analysisResult.analysis);
+        } catch {
+          // Ignore - analysis might have already been done
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to get auto-suggestions');
+    } finally {
+      setIsAutoSuggesting(false);
+    }
+  }, [sessionId, imageAnalysis]);
+  
+  // NEW: Analyze image when entering step 3
+  useEffect(() => {
+    if (currentStep === 3 && sessionId && imageFile && !imageAnalysis && !isAnalyzing && !analysisAttempted) {
+      setIsAnalyzing(true);
+      setAnalysisAttempted(true);
+      analyzeImage(sessionId)
+        .then(result => {
+          setImageAnalysis(result.analysis);
+        })
+        .catch(err => {
+          // Non-fatal - continue without analysis
+          console.warn('Image analysis failed:', err);
+        })
+        .finally(() => {
+          setIsAnalyzing(false);
+        });
+    }
+  }, [currentStep, sessionId, imageFile, imageAnalysis, isAnalyzing, analysisAttempted]);
   
   // Generate video
   const handleGenerate = useCallback(async () => {
@@ -138,7 +227,10 @@ export default function App() {
       setProgress(0);
       setVideoReady(false);
       
-      await generateVideo(sessionId, settings);
+      await generateVideo(sessionId, {
+        ...settings,
+        effect_toggles: effectToggles,
+      });
       
       // Poll for completion
       const pollStatus = async () => {
@@ -163,7 +255,7 @@ export default function App() {
       setIsGenerating(false);
       setError(err instanceof Error ? err.message : 'Failed to generate video');
     }
-  }, [sessionId, settings]);
+  }, [sessionId, settings, effectToggles]);
   
   // Export video
   const handleExport = useCallback(async () => {
@@ -171,16 +263,36 @@ export default function App() {
     
     try {
       setError(null);
+      setIsExporting(true);
+      setExportProgress(0);
+      
       await exportVideo(sessionId);
       
-      // Trigger download
-      const link = document.createElement('a');
-      link.href = getDownloadUrl(sessionId);
-      link.download = 'beat-reactive-video.mp4';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      // Poll for export completion
+      const pollExportStatus = async () => {
+        const status = await getGenerationStatus(sessionId);
+        setExportProgress(status.progress * 100);
+        
+        if (status.status === 'export_complete') {
+          setIsExporting(false);
+          // Trigger download
+          const link = document.createElement('a');
+          link.href = getDownloadUrl(sessionId);
+          link.download = 'beat-reactive-video.mp4';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        } else if (status.status === 'error') {
+          setIsExporting(false);
+          setError('Export failed. Please try again.');
+        } else {
+          setTimeout(pollExportStatus, 500);
+        }
+      };
+      
+      pollExportStatus();
     } catch (err) {
+      setIsExporting(false);
       setError(err instanceof Error ? err.message : 'Failed to export video');
     }
   }, [sessionId]);
@@ -194,12 +306,12 @@ export default function App() {
       <header className="border-b border-surface-200 bg-white">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-accent flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-purple-500/20">
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div>
               <h1 className="font-display text-xl font-bold text-surface-900">Beat Visualizer</h1>
-              <p className="text-sm text-surface-500">Create music videos in seconds</p>
+              <p className="text-sm text-surface-500">AI-powered music videos</p>
             </div>
           </div>
         </div>
@@ -257,17 +369,6 @@ export default function App() {
                 icon={<Music className="w-8 h-8" />}
               />
             </div>
-            
-            {imageFile && audioFile && (
-              <div className="mt-8 text-center">
-                <button
-                  onClick={() => setCurrentStep(3)}
-                  className="px-6 py-3 bg-accent text-white font-medium rounded-xl hover:bg-accent-dark transition-colors"
-                >
-                  Continue to Adjust
-                </button>
-              </div>
-            )}
           </div>
         )}
         
@@ -276,25 +377,33 @@ export default function App() {
           <div className="animate-fade-in">
             <div className="text-center mb-8">
               <h2 className="font-display text-2xl font-bold text-surface-900 mb-2">
-                Select Region & Adjust
+                Customize Your Effects
               </h2>
               <p className="text-surface-500">
-                Choose which part of your track to visualize and dial in the vibe
+                Select effects and adjust intensities, or let AI suggest settings
               </p>
             </div>
             
             <div className="grid lg:grid-cols-3 gap-8">
               {/* Left: Preview & Waveform */}
               <div className="lg:col-span-2 space-y-6">
-                {/* Image Preview */}
+                {/* Image Preview with Analysis Indicator */}
                 {imagePreview && (
                   <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                    <div className="aspect-video bg-surface-100 rounded-xl overflow-hidden flex items-center justify-center">
+                    <div className="relative aspect-video bg-surface-100 rounded-xl overflow-hidden flex items-center justify-center">
                       <img 
                         src={imagePreview} 
                         alt="Cover art preview" 
                         className="max-w-full max-h-full object-contain"
                       />
+                      {isAnalyzing && (
+                        <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                          <div className="bg-white rounded-lg px-4 py-2 flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin text-accent" />
+                            <span className="text-sm text-surface-700">Analyzing image...</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -327,7 +436,7 @@ export default function App() {
                     {ASPECT_RATIOS.map((ratio) => (
                       <button
                         key={ratio.value}
-                        onClick={() => handleSettingsChange('aspect_ratio', ratio.value)}
+                        onClick={() => handleAspectRatioChange(ratio.value)}
                         className={`p-3 rounded-xl text-left transition-all ${
                           settings.aspect_ratio === ratio.value
                             ? 'bg-accent text-white'
@@ -345,12 +454,13 @@ export default function App() {
                   </div>
                 </div>
                 
-                {/* Effect Sliders */}
+                {/* Effect Controls */}
                 <EffectControls
-                  motionIntensity={settings.motion_intensity}
-                  beatReactivity={settings.beat_reactivity}
-                  energyLevel={settings.energy_level}
-                  onChange={handleSettingsChange}
+                  effectToggles={effectToggles}
+                  onChange={handleEffectTogglesChange}
+                  onAutoSuggest={handleAutoSuggest}
+                  isAutoSuggesting={isAutoSuggesting}
+                  imageAnalysis={imageAnalysis}
                 />
                 
                 {/* Generate Button */}
@@ -401,23 +511,46 @@ export default function App() {
                   videoUrl={getPreviewUrl(sessionId)}
                   aspectRatio={settings.aspect_ratio}
                 />
+                
+                {/* Playbook Summary */}
+                {playbook && (
+                  <div className="mt-4 bg-white rounded-2xl border border-surface-200 p-4">
+                    <h3 className="text-sm font-medium text-surface-700 mb-2">Generation Summary</h3>
+                    <p className="text-sm text-surface-600 mb-3">{playbook.summary}</p>
+                    
+                    {playbook.active_effects && playbook.active_effects.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {playbook.active_effects.map((effect, i) => (
+                          <span 
+                            key={i}
+                            className="text-xs px-2 py-1 bg-accent/10 text-accent rounded-full"
+                          >
+                            {effect}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               
               {/* Controls & Actions */}
               <div className="space-y-6">
                 <EffectControls
-                  motionIntensity={settings.motion_intensity}
-                  beatReactivity={settings.beat_reactivity}
-                  energyLevel={settings.energy_level}
-                  onChange={handleSettingsChange}
+                  effectToggles={effectToggles}
+                  onChange={handleEffectTogglesChange}
+                  onAutoSuggest={handleAutoSuggest}
+                  isAutoSuggesting={isAutoSuggesting}
+                  imageAnalysis={imageAnalysis}
                 />
                 
                 <div className="space-y-3">
                   <button
                     onClick={handleExport}
-                    className="w-full py-4 bg-accent text-white font-medium rounded-xl hover:bg-accent-dark transition-colors"
+                    disabled={isExporting}
+                    className="w-full py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white font-medium rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
                   >
-                    Export Video
+                    {isExporting ? 'Exporting...' : 'Export High Quality'}
                   </button>
                   
                   <button
@@ -433,7 +566,41 @@ export default function App() {
           </div>
         )}
       </main>
+      
+      {/* Export Modal */}
+      {isExporting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl animate-fade-in">
+            <div className="flex flex-col items-center text-center">
+              {/* Animated icon */}
+              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-violet-100 to-purple-100 flex items-center justify-center mb-6">
+                <Download className="w-8 h-8 text-violet-600 animate-pulse" />
+              </div>
+              
+              <h3 className="font-display text-xl font-bold text-surface-900 mb-2">
+                Exporting Your Video
+              </h3>
+              <p className="text-surface-500 mb-6">
+                Rendering at full quality. This may take a moment.
+              </p>
+              
+              {/* Progress bar */}
+              <div className="w-full mb-4">
+                <div className="h-3 bg-surface-200 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-violet-500 to-purple-600 rounded-full transition-all duration-300"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              </div>
+              
+              <span className="text-2xl font-display font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent">
+                {Math.round(exportProgress)}%
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-

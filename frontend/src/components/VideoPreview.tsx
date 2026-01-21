@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 interface VideoPreviewProps {
@@ -8,9 +8,24 @@ interface VideoPreviewProps {
 
 export default function VideoPreview({ videoUrl, aspectRatio }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  
+  // Spacebar keyboard handler for play/pause
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only handle spacebar, and ignore if user is typing in an input
+      if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+        e.preventDefault();
+        handlePlayPause();
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPlaying]);
   
   const handlePlayPause = () => {
     if (!videoRef.current) return;
@@ -66,11 +81,15 @@ export default function VideoPreview({ videoUrl, aspectRatio }: VideoPreviewProp
   return (
     <div className="bg-white rounded-2xl border border-surface-200 p-4">
       <div className="flex justify-center mb-4">
-        <div className={`relative bg-black rounded-xl overflow-hidden ${getAspectClass()}`}>
+        <div 
+          ref={containerRef}
+          className={`relative bg-black rounded-xl overflow-hidden cursor-pointer ${getAspectClass()}`}
+          onClick={handlePlayPause}
+        >
           <video
             ref={videoRef}
             src={videoUrl}
-            className="w-full h-full object-contain"
+            className="w-full h-full object-contain pointer-events-none"
             onTimeUpdate={handleTimeUpdate}
             onLoadedMetadata={handleLoadedMetadata}
             onEnded={handleEnded}
@@ -81,14 +100,11 @@ export default function VideoPreview({ videoUrl, aspectRatio }: VideoPreviewProp
           
           {/* Play overlay when paused */}
           {!isPlaying && (
-            <button
-              onClick={handlePlayPause}
-              className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/40 transition-colors"
-            >
+            <div className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/40 transition-colors">
               <div className="w-16 h-16 rounded-full bg-white/90 flex items-center justify-center">
                 <Play className="w-8 h-8 text-surface-900 ml-1" />
               </div>
-            </button>
+            </div>
           )}
         </div>
       </div>
