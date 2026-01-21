@@ -2,17 +2,21 @@
 FastAPI Backend for Beat-Reactive Video Generator
 Supports 13 customizable effects with AI-powered image analysis and auto-suggestions.
 """
+from __future__ import annotations
 
 import os
 import uuid
 import shutil
+import time
+import asyncio
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -48,8 +52,54 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # Mount static files for serving outputs
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
-# In-memory session storage
-sessions = {}
+# In-memory session storage with lock for thread safety
+sessions: Dict[str, SessionData] = {}
+session_lock = threading.Lock()
+
+# Session expiration settings
+SESSION_EXPIRY_SECONDS = 3600  # 1 hour
+SESSION_CLEANUP_INTERVAL = 300  # Check every 5 minutes
+
+
+def cleanup_expired_sessions():
+    """Remove sessions that haven't been accessed in SESSION_EXPIRY_SECONDS."""
+    current_time = time.time()
+    expired_sessions = []
+    
+    with session_lock:
+        for session_id, session in sessions.items():
+            if current_time - session.last_accessed > SESSION_EXPIRY_SECONDS:
+                expired_sessions.append(session_id)
+    
+    for session_id in expired_sessions:
+        # Clean up files
+        session_dir = UPLOAD_DIR / session_id
+        output_dir = OUTPUT_DIR / session_id
+        
+        if session_dir.exists():
+            shutil.rmtree(session_dir, ignore_errors=True)
+        if output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
+        
+        with session_lock:
+            if session_id in sessions:
+                del sessions[session_id]
+    
+    if expired_sessions:
+        print(f"Cleaned up {len(expired_sessions)} expired sessions")
+
+
+async def session_cleanup_task():
+    """Background task that periodically cleans up expired sessions."""
+    while True:
+        await asyncio.sleep(SESSION_CLEANUP_INTERVAL)
+        cleanup_expired_sessions()
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background cleanup task on app startup."""
+    asyncio.create_task(session_cleanup_task())
 
 
 # ============================================================================
@@ -78,6 +128,10 @@ class SessionData(BaseModel):
     
     output_path: Optional[str] = None
     render_status: str = "idle"
+    
+    # Session tracking for cleanup
+    created_at: float = 0.0
+    last_accessed: float = 0.0
     render_progress: float = 0.0
     playbook: Optional[dict] = None
     
@@ -147,16 +201,24 @@ async def root():
 async def create_session():
     """Create a new editing session."""
     session_id = str(uuid.uuid4())
-    sessions[session_id] = SessionData(session_id=session_id)
+    current_time = time.time()
+    with session_lock:
+        sessions[session_id] = SessionData(
+            session_id=session_id,
+            created_at=current_time,
+            last_accessed=current_time
+        )
     return {"session_id": session_id}
 
 
 @app.get("/session/{session_id}")
 async def get_session(session_id: str):
     """Get session data."""
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
+    with session_lock:
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        sessions[session_id].last_accessed = time.time()
+        return sessions[session_id]
 
 
 # ============================================================================
@@ -249,8 +311,8 @@ async def get_waveform(session_id: str, num_points: int = 1000):
 
 
 @app.get("/audio/stream/{session_id}")
-async def stream_audio(session_id: str):
-    """Stream the uploaded audio file for preview playback."""
+async def stream_audio(session_id: str, request: Request):
+    """Stream the uploaded audio file for preview playback with Range request support."""
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     
@@ -271,7 +333,56 @@ async def stream_audio(session_id: str):
     }
     media_type = media_types.get(ext, "audio/mpeg")
     
-    return FileResponse(audio_path, media_type=media_type)
+    file_size = audio_path.stat().st_size
+    
+    # Handle Range requests for seeking support
+    range_header = request.headers.get("range")
+    
+    if range_header:
+        # Parse range header (e.g., "bytes=0-1023")
+        try:
+            range_spec = range_header.replace("bytes=", "")
+            range_parts = range_spec.split("-")
+            start = int(range_parts[0]) if range_parts[0] else 0
+            end = int(range_parts[1]) if range_parts[1] else file_size - 1
+        except (ValueError, IndexError):
+            start = 0
+            end = file_size - 1
+        
+        # Clamp values
+        start = max(0, min(start, file_size - 1))
+        end = max(start, min(end, file_size - 1))
+        content_length = end - start + 1
+        
+        def iterfile():
+            with open(audio_path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                chunk_size = 64 * 1024  # 64KB chunks
+                while remaining > 0:
+                    chunk = f.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+        
+        return StreamingResponse(
+            iterfile(),
+            status_code=206,
+            media_type=media_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            }
+        )
+    
+    # No range requested, return full file
+    return FileResponse(
+        audio_path, 
+        media_type=media_type,
+        headers={"Accept-Ranges": "bytes"}
+    )
 
 
 @app.get("/audio/analysis/{session_id}")
@@ -488,22 +599,33 @@ async def update_effect_toggles(session_id: str, toggles: Dict[str, Any]):
 def render_video_task(session_id: str, settings: GenerateRequest):
     """Background task to render video."""
     try:
-        session = sessions[session_id]
-        session.render_status = "rendering"
-        session.render_progress = 0.0
+        # Get session data with lock
+        with session_lock:
+            if session_id not in sessions:
+                print(f"Session {session_id} not found, aborting render")
+                return
+            session = sessions[session_id]
+            session.render_status = "rendering"
+            session.render_progress = 0.0
+            # Copy needed data while holding lock
+            audio_path = session.audio_path
+            image_path = session.image_path
+            session_effect_toggles = session.effect_toggles
+            session_image_analysis = session.image_analysis
+            particle_sprite_path = session.particle_sprite_path
         
-        # Analyze audio
+        # Analyze audio (outside lock - this is slow)
         start = settings.start_time
         duration = (settings.end_time or 30.0) - start
-        features = analyze_audio(session.audio_path, start_time=start, duration=duration)
+        features = analyze_audio(audio_path, start_time=start, duration=duration)
         
         # Determine which toggle system to use
         if settings.effect_toggles:
             # New toggle-based system
             toggles = toggles_from_dict(settings.effect_toggles)
-        elif session.effect_toggles:
+        elif session_effect_toggles:
             # Use session's stored toggles
-            toggles = toggles_from_dict(session.effect_toggles)
+            toggles = toggles_from_dict(session_effect_toggles)
         elif settings.motion_intensity is not None:
             # Legacy slider-based system (backwards compatibility)
             toggles = legacy_settings_to_toggles(
@@ -517,8 +639,8 @@ def render_video_task(session_id: str, settings: GenerateRequest):
         
         # Build image context if analysis exists
         image_context = None
-        if session.image_analysis:
-            image_context = image_context_from_dict(session.image_analysis)
+        if session_image_analysis:
+            image_context = image_context_from_dict(session_image_analysis)
         
         # Calculate effect parameters
         effect_params = calculate_effect_parameters(features, toggles, image_context)
@@ -546,30 +668,37 @@ def render_video_task(session_id: str, settings: GenerateRequest):
         )
         
         def progress_callback(progress: float):
-            session.render_progress = progress
+            with session_lock:
+                if session_id in sessions:
+                    sessions[session_id].render_progress = progress
         
         render_video(
-            image_path=session.image_path,
-            audio_path=session.audio_path,
+            image_path=image_path,
+            audio_path=audio_path,
             output_path=str(output_path),
             effect_params=effect_params,
             render_settings=render_settings,
             audio_start=start,
             progress_callback=progress_callback,
-            custom_particle_sprite=session.particle_sprite_path
+            custom_particle_sprite=particle_sprite_path
         )
         
         # Generate playbook summary
-        playbook = generate_playbook_v2(toggles, features, session.image_analysis)
+        playbook = generate_playbook_v2(toggles, features, session_image_analysis)
         
-        session.output_path = str(output_path)
-        session.render_status = "complete"
-        session.render_progress = 1.0
-        session.playbook = playbook
+        # Update session with results (with lock)
+        with session_lock:
+            if session_id in sessions:
+                sessions[session_id].output_path = str(output_path)
+                sessions[session_id].render_status = "complete"
+                sessions[session_id].render_progress = 1.0
+                sessions[session_id].playbook = playbook
         
     except Exception as e:
-        session.render_status = "error"
-        session.playbook = {"error": str(e)}
+        with session_lock:
+            if session_id in sessions:
+                sessions[session_id].render_status = "error"
+                sessions[session_id].playbook = {"error": str(e)}
         print(f"Render error: {e}")
         import traceback
         traceback.print_exc()
@@ -698,29 +827,45 @@ async def get_preview(session_id: str):
 def export_video_task(session_id: str, quality: str):
     """Background task to export video at full quality."""
     try:
-        session = sessions[session_id]
-        session.render_status = "exporting"
-        session.render_progress = 0.0
+        # Get session data with lock
+        with session_lock:
+            if session_id not in sessions:
+                print(f"Session {session_id} not found, aborting export")
+                return
+            session = sessions[session_id]
+            session.render_status = "exporting"
+            session.render_progress = 0.0
+            # Copy needed data while holding lock
+            audio_path = session.audio_path
+            image_path = session.image_path
+            start = session.start_time
+            end_time = session.end_time
+            session_effect_toggles = session.effect_toggles
+            session_image_analysis = session.image_analysis
+            session_aspect_ratio = session.aspect_ratio
+            motion_intensity = session.motion_intensity
+            beat_reactivity = session.beat_reactivity
+            energy_level = session.energy_level
+            particle_sprite_path = session.particle_sprite_path
         
-        # Analyze audio
-        start = session.start_time
-        duration = (session.end_time or 30.0) - start
-        features = analyze_audio(session.audio_path, start_time=start, duration=duration)
+        # Analyze audio (outside lock - this is slow)
+        duration = (end_time or 30.0) - start
+        features = analyze_audio(audio_path, start_time=start, duration=duration)
         
         # Get toggles
-        if session.effect_toggles:
-            toggles = toggles_from_dict(session.effect_toggles)
+        if session_effect_toggles:
+            toggles = toggles_from_dict(session_effect_toggles)
         else:
             toggles = legacy_settings_to_toggles(
-                session.motion_intensity / 100.0,
-                session.beat_reactivity / 100.0,
-                session.energy_level / 100.0
+                motion_intensity / 100.0,
+                beat_reactivity / 100.0,
+                energy_level / 100.0
             )
         
         # Build image context
         image_context = None
-        if session.image_analysis:
-            image_context = image_context_from_dict(session.image_analysis)
+        if session_image_analysis:
+            image_context = image_context_from_dict(session_image_analysis)
         
         effect_params = calculate_effect_parameters(features, toggles, image_context)
         
@@ -731,7 +876,7 @@ def export_video_task(session_id: str, quality: str):
             "16:9": AspectRatio.HORIZONTAL,
             "4:5": AspectRatio.PORTRAIT
         }
-        aspect = aspect_map.get(session.aspect_ratio, AspectRatio.VERTICAL)
+        aspect = aspect_map.get(session_aspect_ratio, AspectRatio.VERTICAL)
         
         # Render at full quality
         output_dir = OUTPUT_DIR / session_id
@@ -747,24 +892,31 @@ def export_video_task(session_id: str, quality: str):
         )
         
         def progress_callback(progress: float):
-            session.render_progress = progress
+            with session_lock:
+                if session_id in sessions:
+                    sessions[session_id].render_progress = progress
         
         render_video(
-            image_path=session.image_path,
-            audio_path=session.audio_path,
+            image_path=image_path,
+            audio_path=audio_path,
             output_path=str(export_path),
             effect_params=effect_params,
             render_settings=render_settings,
             audio_start=start,
             progress_callback=progress_callback,
-            custom_particle_sprite=session.particle_sprite_path
+            custom_particle_sprite=particle_sprite_path
         )
         
-        session.render_status = "export_complete"
-        session.render_progress = 1.0
+        # Update session with results (with lock)
+        with session_lock:
+            if session_id in sessions:
+                sessions[session_id].render_status = "export_complete"
+                sessions[session_id].render_progress = 1.0
         
     except Exception as e:
-        session.render_status = "error"
+        with session_lock:
+            if session_id in sessions:
+                sessions[session_id].render_status = "error"
         print(f"Export error: {e}")
         import traceback
         traceback.print_exc()

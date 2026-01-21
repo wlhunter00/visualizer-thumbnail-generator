@@ -46,7 +46,6 @@ export default function App() {
   // NEW: Image analysis state
   const [imageAnalysis, setImageAnalysis] = useState<ImageAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisAttempted, setAnalysisAttempted] = useState(false);
   const [isAutoSuggesting, setIsAutoSuggesting] = useState(false);
   
   // Settings state - now using effect toggles
@@ -95,7 +94,6 @@ export default function App() {
       
       // Reset analysis when new image uploaded
       setImageAnalysis(null);
-      setAnalysisAttempted(false);
       
       // Auto-advance if audio is already uploaded
       if (audioFile) {
@@ -200,9 +198,8 @@ export default function App() {
   
   // NEW: Analyze image when entering step 3
   useEffect(() => {
-    if (currentStep === 3 && sessionId && imageFile && !imageAnalysis && !isAnalyzing && !analysisAttempted) {
+    if (currentStep === 3 && sessionId && imageFile && !imageAnalysis && !isAnalyzing) {
       setIsAnalyzing(true);
-      setAnalysisAttempted(true);
       analyzeImage(sessionId)
         .then(result => {
           setImageAnalysis(result.analysis);
@@ -215,7 +212,7 @@ export default function App() {
           setIsAnalyzing(false);
         });
     }
-  }, [currentStep, sessionId, imageFile, imageAnalysis, isAnalyzing, analysisAttempted]);
+  }, [currentStep, sessionId, imageFile, imageAnalysis, isAnalyzing]);
   
   // Generate video
   const handleGenerate = useCallback(async () => {

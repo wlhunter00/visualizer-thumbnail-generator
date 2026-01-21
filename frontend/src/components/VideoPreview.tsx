@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 interface VideoPreviewProps {
@@ -13,6 +13,17 @@ export default function VideoPreview({ videoUrl, aspectRatio }: VideoPreviewProp
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   
+  const handlePlayPause = useCallback(() => {
+    if (!videoRef.current) return;
+    
+    // Use video element's paused state to avoid stale closure
+    if (videoRef.current.paused) {
+      videoRef.current.play();
+    } else {
+      videoRef.current.pause();
+    }
+  }, []);
+  
   // Spacebar keyboard handler for play/pause
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -25,18 +36,7 @@ export default function VideoPreview({ videoUrl, aspectRatio }: VideoPreviewProp
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying]);
-  
-  const handlePlayPause = () => {
-    if (!videoRef.current) return;
-    
-    if (isPlaying) {
-      videoRef.current.pause();
-    } else {
-      videoRef.current.play();
-    }
-    setIsPlaying(!isPlaying);
-  };
+  }, [handlePlayPause]);
   
   const handleRestart = () => {
     if (!videoRef.current) return;

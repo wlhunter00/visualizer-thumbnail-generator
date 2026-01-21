@@ -280,12 +280,15 @@ def render_video(
                     effects.get("echo_trail_intensity", 0.5)
                 )
             
-            # Store frame for echo effect
+            # Store frame for echo effect, or clear frames if effect is disabled
             if effects.get("echo_trail_enabled", False):
                 echo_frames.append(frame.copy())
                 max_frames = effects.get("echo_trail_count", 5) + 2
                 if len(echo_frames) > max_frames:
                     echo_frames.pop(0)
+            elif echo_frames:
+                # Clear accumulated frames when effect is disabled to free memory
+                echo_frames.clear()
             
             # ================================================================
             # LAYER 7: PARTICLE BURST
@@ -305,7 +308,7 @@ def render_video(
                         colors=burst_params.get("colors", [(255, 200, 100)]),
                         size_range=burst_params.get("size_range", (3, 12)),
                         speed=burst_params.get("speed", 200),
-                        lifetime=burst_params.get("lifetime", 1.0) if "lifetime" in burst_params else 1.0,
+                        lifetime=burst_params.get("lifetime", 1.0),
                         time=time
                     )
             
@@ -418,7 +421,11 @@ def render_video(
             output_path
         ]
         
-        subprocess.run(cmd, check=True, capture_output=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown FFmpeg error"
+            raise RuntimeError(f"FFmpeg failed (exit code {result.returncode}): {error_msg}")
         
         if progress_callback:
             progress_callback(1.0)
@@ -503,7 +510,7 @@ def apply_ripple_wave(
     width: int, height: int,
     intensity: float
 ) -> Image.Image:
-    """Apply ripple wave distortion."""
+    """Apply ripple wave distortion using vectorized NumPy operations."""
     if intensity < 0.01:
         return image
     
@@ -518,29 +525,37 @@ def apply_ripple_wave(
     
     # Convert to numpy for faster processing
     img_array = np.array(image)
-    result = np.zeros_like(img_array)
     
-    for y in range(height):
-        for x in range(width):
-            dx = x - center_x
-            dy = y - center_y
-            dist = math.sqrt(dx * dx + dy * dy)
-            
-            if abs(dist - radius) < wavelength * 2:
-                # Apply ripple displacement
-                angle = math.atan2(dy, dx)
-                wave = math.sin((dist - radius) * 2 * math.pi / wavelength)
-                displacement = wave * amplitude * math.exp(-((dist - radius) / wavelength) ** 2)
-                
-                src_x = int(x + math.cos(angle) * displacement)
-                src_y = int(y + math.sin(angle) * displacement)
-                
-                src_x = max(0, min(width - 1, src_x))
-                src_y = max(0, min(height - 1, src_y))
-                
-                result[y, x] = img_array[src_y, src_x]
-            else:
-                result[y, x] = img_array[y, x]
+    # Create coordinate grids
+    y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
+    
+    # Calculate distance and angle from center
+    dx = x_coords - center_x
+    dy = y_coords - center_y
+    dist = np.sqrt(dx * dx + dy * dy)
+    angle = np.arctan2(dy, dx)
+    
+    # Create mask for affected pixels (within 2 wavelengths of ripple radius)
+    affected_mask = np.abs(dist - radius) < wavelength * 2
+    
+    # Calculate displacement for all pixels (vectorized)
+    wave = np.sin((dist - radius) * 2 * np.pi / wavelength)
+    gaussian_falloff = np.exp(-((dist - radius) / wavelength) ** 2)
+    displacement = wave * amplitude * gaussian_falloff
+    
+    # Apply displacement only where affected
+    displacement = np.where(affected_mask, displacement, 0)
+    
+    # Calculate source coordinates
+    src_x = (x_coords + np.cos(angle) * displacement).astype(np.int32)
+    src_y = (y_coords + np.sin(angle) * displacement).astype(np.int32)
+    
+    # Clamp to valid range
+    src_x = np.clip(src_x, 0, width - 1)
+    src_y = np.clip(src_y, 0, height - 1)
+    
+    # Sample from source image using advanced indexing
+    result = img_array[src_y, src_x]
     
     return Image.fromarray(result.astype('uint8'), mode=image.mode)
 
@@ -905,27 +920,27 @@ def apply_vignette(
     strength: float,
     width: int, height: int
 ) -> Image.Image:
-    """Apply vignette effect (darkened edges)."""
+    """Apply vignette effect (darkened edges) using vectorized NumPy operations."""
     if strength < 0.01:
         return image
-    
-    # Create vignette mask
-    mask = Image.new("L", (width, height), 255)
-    draw = ImageDraw.Draw(mask)
     
     cx, cy = width // 2, height // 2
     max_dist = math.sqrt(cx * cx + cy * cy)
     
-    for y in range(height):
-        for x in range(width):
-            dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-            normalized_dist = dist / max_dist
-            
-            # Vignette curve
-            vignette = 1 - (normalized_dist ** 2) * strength
-            vignette = max(0, min(1, vignette))
-            
-            mask.putpixel((x, y), int(vignette * 255))
+    # Create coordinate grids using NumPy
+    y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
+    
+    # Calculate normalized distance from center (vectorized)
+    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
+    normalized_dist = dist / max_dist
+    
+    # Calculate vignette values (vectorized)
+    vignette = 1 - (normalized_dist ** 2) * strength
+    vignette = np.clip(vignette, 0, 1)
+    
+    # Convert to mask image
+    mask_array = (vignette * 255).astype(np.uint8)
+    mask = Image.fromarray(mask_array, mode="L")
     
     # Apply vignette
     darkened = image.copy()
