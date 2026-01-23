@@ -567,7 +567,7 @@ def apply_element_scale(
     width: int, height: int,
     resampling: Image.Resampling
 ) -> Image.Image:
-    """Scale the element area."""
+    """Scale the element area using an elliptical feathered mask for natural blending."""
     if abs(scale - 1.0) < 0.001:
         return image
     
@@ -578,28 +578,44 @@ def apply_element_scale(
     bh = int(bounds.get("h", 0.5) * height)
     
     # Expand bounds slightly for smoother effect
-    padding = int(min(bw, bh) * 0.1)
+    padding = int(min(bw, bh) * 0.15)
     bx = max(0, bx - padding)
     by = max(0, by - padding)
     bw = min(width - bx, bw + padding * 2)
     bh = min(height - by, bh + padding * 2)
     
-    # Extract and scale the element region
-    element = image.crop((bx, by, bx + bw, by + bh))
+    # Calculate scaled dimensions
     new_w = int(bw * scale)
     new_h = int(bh * scale)
     
     if new_w <= 0 or new_h <= 0:
         return image
     
+    # Create elliptical mask with soft feathered edges
+    mask = Image.new("L", (bw, bh), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse([0, 0, bw - 1, bh - 1], fill=255)
+    
+    # Apply Gaussian blur for soft feathered edges
+    feather_amount = max(5, int(min(bw, bh) * 0.1))
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_amount))
+    
+    # Extract element region and apply elliptical mask as alpha
+    element = image.crop((bx, by, bx + bw, by + bh)).convert("RGBA")
+    element.putalpha(mask)
+    
+    # Scale the masked element
     scaled = element.resize((new_w, new_h), resampling)
     
-    # Center the scaled element
-    offset_x = (bw - new_w) // 2
-    offset_y = (bh - new_h) // 2
+    # Calculate position to center the scaled element
+    center_x = bx + bw // 2
+    center_y = by + bh // 2
+    paste_x = center_x - new_w // 2
+    paste_y = center_y - new_h // 2
     
+    # Composite onto original image
     result = image.copy()
-    result.paste(scaled, (bx + offset_x, by + offset_y), scaled if scaled.mode == 'RGBA' else None)
+    result.paste(scaled, (paste_x, paste_y), scaled)
     
     return result
 

@@ -208,3 +208,50 @@ export function getAudioStreamUrl(sessionId: string): string {
 export function getDownloadUrl(sessionId: string): string {
   return `${API_BASE}/download/${sessionId}`;
 }
+
+// ============================================================================
+// Demo Endpoints
+// ============================================================================
+
+export interface DemoEffect {
+  key: string;
+  name: string;
+  description: string;
+  category: 'element' | 'particle' | 'style' | 'background';
+  explanation: string;
+  video_url: string;
+}
+
+export interface DemoPreset {
+  key: string;
+  name: string;
+  description: string;
+  category: 'mood' | 'genre' | 'combo' | 'intensity' | 'platform' | 'theme';
+  explanation: string;
+  effects: Record<string, number>; // effect_key -> intensity
+  video_url: string;
+}
+
+export interface DemoManifest {
+  version: string;
+  audio_start_time: number;
+  duration: number;
+  single_effects: DemoEffect[];
+  presets: DemoPreset[];
+}
+
+export async function getDemoManifest(): Promise<DemoManifest> {
+  const res = await fetch(`${API_BASE}/demos/manifest.json`);
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error("Demo videos not generated yet. Run 'python generate_demos.py' in the backend folder.");
+    }
+    const error = await res.json().catch(() => ({ detail: 'Failed to load demos' }));
+    throw new Error(error.detail || 'Failed to load demo manifest');
+  }
+  return res.json();
+}
+
+export function getDemoVideoUrl(effectKey: string): string {
+  return `${API_BASE}/demos/${effectKey}.mp4`;
+}

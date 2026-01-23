@@ -26,9 +26,21 @@ import UploadStep from './components/UploadStep';
 import WaveformSelector from './components/WaveformSelector';
 import EffectControls from './components/EffectControls';
 import VideoPreview from './components/VideoPreview';
-import { Music, Image as ImageIcon, Sparkles, Download, Loader2 } from 'lucide-react';
+import DemoPage from './DemoPage';
+import { Music, Image as ImageIcon, Sparkles, Download, Loader2, PlayCircle } from 'lucide-react';
 
-export default function App() {
+// Parse hash route
+function parseHash(): { page: 'main' | 'demo'; effectKey?: string } {
+  const hash = window.location.hash;
+  if (hash.startsWith('#/demo')) {
+    const parts = hash.split('/');
+    const effectKey = parts[2] || undefined;
+    return { page: 'demo', effectKey };
+  }
+  return { page: 'main' };
+}
+
+function MainApp() {
   // Session state
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState<Step>(1);
@@ -311,6 +323,15 @@ export default function App() {
               <p className="text-sm text-surface-500">AI-powered music videos</p>
             </div>
           </div>
+          
+          <a
+            href="#/demo"
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-surface-600 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors"
+          >
+            <PlayCircle className="w-4 h-4" />
+            <span className="hidden sm:inline">See Effects Demo</span>
+            <span className="sm:hidden">Demo</span>
+          </a>
         </div>
       </header>
       
@@ -600,4 +621,35 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// Router component
+export default function App() {
+  const [route, setRoute] = useState(parseHash);
+
+  // Listen for hash changes
+  useEffect(() => {
+    const handleHashChange = () => {
+      setRoute(parseHash());
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const navigateHome = useCallback(() => {
+    window.location.hash = '';
+    setRoute({ page: 'main' });
+  }, []);
+
+  if (route.page === 'demo') {
+    return (
+      <DemoPage 
+        initialEffect={route.effectKey} 
+        onNavigateHome={navigateHome}
+      />
+    );
+  }
+
+  return <MainApp />;
 }

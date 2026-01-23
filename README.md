@@ -7,11 +7,12 @@ Create professional, beat-reactive music videos from your cover art and audio in
 ## Features
 
 - **Simple 4-Step Flow**: Upload image → Upload audio → Adjust → Export
-- **Beat-Reactive Effects**: Zoom pulse, shake, blur, color shifts, particles, geometric overlays, glitch
+- **13 Customizable Effects**: Glow, scale pulse, neon outline, particles, glitch, and more
+- **AI-Powered Analysis**: Automatic image analysis and effect suggestions
 - **Visual Waveform Selection**: Drag to select exactly which part of your track to visualize
-- **3 High-Level Controls**: Motion Intensity, Beat Reactivity, Energy Level
+- **Effects Demo Page**: See all effects in action before creating your own
 - **All Social Formats**: 9:16 (TikTok/Reels), 1:1 (Instagram), 16:9 (YouTube), 4:5 (Facebook)
-- **Brand Playbook**: Get a summary of your visual identity to maintain consistency
+- **Deep Linking**: Share direct links to specific effects (e.g., `#/demo/glitch`)
 
 ## Requirements
 
@@ -49,6 +50,13 @@ chmod +x start.sh
 ```
 
 3. Open http://localhost:5173 in your browser
+
+4. (Optional) Generate effect demo videos:
+```bash
+cd backend
+python generate_demos.py
+```
+This creates 30-second demo videos for each of the 13 effects, viewable at `#/demo`.
 
 ## Manual Setup
 
@@ -88,15 +96,53 @@ Your 3 slider settings control how audio features map to visual effects:
 | Beat Reactivity | How tightly effects sync to detected beats |
 | Energy Level | Overall mood - calm to energetic |
 
-### Available Effects
+### Available Effects (13 Total)
 
-1. **Zoom Pulse** - Subtle in/out breathing synced to beats
-2. **Shake** - Quick vibration on strong transients
-3. **Blur/Focus** - Depth-of-field shifts following energy
-4. **Color Shift** - Warmth and brightness changes
-5. **Particles** - Floating dust, sparkles, or bokeh
-6. **Geometric** - Lines, circles, or grid overlays on beats
-7. **Glitch** - Chromatic aberration and slice displacement
+**Element Effects:**
+- **Element Glow** - Pulsating light from your subject on beats
+- **Scale Pulse** - Subject grows/shrinks on each beat
+- **Neon Outline** - Glowing edge around subject (80s/cyberpunk aesthetic)
+- **Echo Trail** - Ghostly afterimages creating motion blur
+
+**Particle Effects:**
+- **Particle Burst** - Particles explode outward on strong beats
+- **Energy Trails** - Orbiting light trails synced to tempo
+- **Light Flares** - Cinematic lens flares at bright spots
+
+**Style Effects:**
+- **Glitch** - RGB split, scan lines, slice displacement
+- **Ripple Wave** - Circular distortion waves on beats
+- **Film Grain** - Vintage film/VHS texture
+- **Strobe Flash** - White flashes on strongest beats
+- **Vignette Pulse** - Dark edges pulse with rhythm
+
+**Background:**
+- **Background Dim** - Darken/blur background for depth separation
+
+View all effects in action at `#/demo` or visit the [Effects Demo](#effects-demo) section.
+
+## Effects Demo
+
+The app includes a demo page showcasing all 13 effects at maximum intensity. To generate the demo videos:
+
+```bash
+cd backend
+python generate_demos.py
+```
+
+This will:
+- Generate 13 videos (one per effect) at 100% intensity
+- Use the demo assets from `demo-assets/` folder
+- Start audio at 1:03 for a more interesting section
+- Output to `backend/demos/` (gitignored)
+- Take approximately 5-10 minutes depending on hardware
+
+Once generated, visit `http://localhost:5173/#/demo` to view all effects.
+
+**Deep linking:** You can link directly to a specific effect:
+- `#/demo/glitch` - Glitch effect
+- `#/demo/particle_burst` - Particle burst effect
+- `#/demo/neon_outline` - Neon outline effect
 
 ## API Endpoints
 
@@ -106,10 +152,13 @@ Your 3 slider settings control how audio features map to visual effects:
 | `/upload/image/{session_id}` | POST | Upload cover art |
 | `/upload/audio/{session_id}` | POST | Upload audio file |
 | `/audio/waveform/{session_id}` | GET | Get waveform data |
+| `/analyze-image/{session_id}` | POST | AI image analysis |
+| `/auto-suggest/{session_id}` | POST | Get AI effect suggestions |
 | `/generate` | POST | Start video generation |
 | `/generate/status/{session_id}` | GET | Check generation progress |
 | `/export` | POST | Export final video |
 | `/download/{session_id}` | GET | Download exported video |
+| `/demos/manifest` | GET | Get demo videos manifest |
 
 ## Project Structure
 
@@ -118,17 +167,23 @@ visualizer-thumbnail-generator/
 ├── backend/
 │   ├── main.py              # FastAPI server
 │   ├── audio_analysis.py    # librosa beat detection
-│   ├── effect_engine.py     # Audio → visual mapping
+│   ├── effect_engine.py     # Audio → visual mapping (13 effects)
 │   ├── video_renderer.py    # FFmpeg video generation
-│   ├── playbook_generator.py # Brand identity summary
+│   ├── generate_demos.py    # Demo video generator script
+│   ├── image_analysis.py    # AI image analysis
+│   ├── demos/               # Generated demo videos (gitignored)
+│   ├── outputs/             # Session outputs (cleaned on restart)
+│   ├── uploads/             # Session uploads (cleaned on restart)
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx          # Main application
+│   │   ├── App.tsx          # Main application with routing
+│   │   ├── DemoPage.tsx     # Effects demo page
 │   │   ├── components/      # React components
 │   │   ├── api.ts           # Backend API calls
 │   │   └── types.ts         # TypeScript types
 │   └── package.json
+├── demo-assets/             # Demo image and audio for generating demos
 ├── start.sh                 # One-command startup
 └── README.md
 ```

@@ -10,6 +10,7 @@ build/
 # Generated files
 backend/uploads/
 backend/outputs/
+backend/demos/
 
 # Environment
 .env

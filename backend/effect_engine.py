@@ -285,8 +285,10 @@ def calculate_effect_parameters(
     # ========================================================================
     glow_triggers = []
     if toggles.element_glow.enabled:
+        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
+        threshold = 0.3 * (1 - toggles.element_glow.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= 0.3:  # Only on notable beats
+            if beat_strength >= threshold:
                 glow_triggers.append((beat_time, beat_strength * toggles.element_glow.intensity))
     
     element_glow = ElementGlowParams(

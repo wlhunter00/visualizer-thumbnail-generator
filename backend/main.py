@@ -46,11 +46,17 @@ app.add_middleware(
 # Storage directories
 UPLOAD_DIR = Path("uploads")
 OUTPUT_DIR = Path("outputs")
+DEMOS_DIR = Path("demos")
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+DEMOS_DIR.mkdir(exist_ok=True)
 
 # Mount static files for serving outputs
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+
+# Mount demos directory (if it exists with content)
+if DEMOS_DIR.exists() and any(DEMOS_DIR.iterdir()):
+    app.mount("/demos", StaticFiles(directory="demos"), name="demos")
 
 # In-memory session storage with lock for thread safety
 sessions: Dict[str, SessionData] = {}
@@ -89,6 +95,19 @@ def cleanup_expired_sessions():
         print(f"Cleaned up {len(expired_sessions)} expired sessions")
 
 
+def cleanup_orphaned_files():
+    """Remove all session folders on startup (outputs/ and uploads/)."""
+    cleaned_count = 0
+    for folder in [UPLOAD_DIR, OUTPUT_DIR]:
+        if folder.exists():
+            for item in folder.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                    cleaned_count += 1
+    if cleaned_count > 0:
+        print(f"Cleaned up {cleaned_count} orphaned session folders")
+
+
 async def session_cleanup_task():
     """Background task that periodically cleans up expired sessions."""
     while True:
@@ -98,7 +117,8 @@ async def session_cleanup_task():
 
 @app.on_event("startup")
 async def startup_event():
-    """Start background cleanup task on app startup."""
+    """Clean up orphaned files and start background cleanup task on app startup."""
+    cleanup_orphaned_files()
     asyncio.create_task(session_cleanup_task())
 
 
@@ -195,6 +215,24 @@ async def root():
         "version": "2.0.0",
         "features": ["13 customizable effects", "AI image analysis", "Auto-suggest settings"]
     }
+
+
+@app.get("/demos/manifest")
+async def get_demos_manifest():
+    """Get the demos manifest with effect metadata."""
+    manifest_path = DEMOS_DIR / "manifest.json"
+    
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Demo videos not generated yet. Run 'python generate_demos.py' in the backend folder."
+        )
+    
+    import json
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+    
+    return manifest
 
 
 @app.post("/session/create")
