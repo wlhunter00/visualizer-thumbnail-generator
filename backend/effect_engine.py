@@ -320,8 +320,10 @@ def calculate_effect_parameters(
     # ========================================================================
     outline_triggers = []
     if toggles.neon_outline.enabled:
+        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
+        threshold = 0.4 * (1 - toggles.neon_outline.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= 0.4:
+            if beat_strength >= threshold:
                 outline_triggers.append((beat_time, beat_strength * toggles.neon_outline.intensity))
     
     # Use a contrasting color for outline
@@ -352,8 +354,10 @@ def calculate_effect_parameters(
     # ========================================================================
     burst_triggers = []
     if toggles.particle_burst.enabled:
+        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
+        threshold = 0.5 * (1 - toggles.particle_burst.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= 0.5:  # Only on strong beats
+            if beat_strength >= threshold:
                 burst_triggers.append((beat_time, beat_strength * toggles.particle_burst.intensity))
     
     particle_burst = ParticleBurstParams(
@@ -389,8 +393,10 @@ def calculate_effect_parameters(
     # ========================================================================
     flare_triggers = []
     if toggles.light_flares.enabled:
+        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
+        threshold = 0.6 * (1 - toggles.light_flares.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= 0.6:
+            if beat_strength >= threshold:
                 flare_triggers.append((beat_time, beat_strength * toggles.light_flares.intensity))
     
     flare_points = [(gp.x, gp.y) for gp in ctx.glow_points] if ctx.glow_points else [(bounds.center_x, bounds.center_y)]
@@ -409,13 +415,10 @@ def calculate_effect_parameters(
     # ========================================================================
     glitch_triggers = []
     if toggles.glitch.enabled:
-        # Trigger on strong transients
-        strong_onsets = [
-            (t, s) for t, s in zip(audio_features.onset_times, audio_features.onset_strengths)
-            if s > 0.7
-        ]
-        for i, (onset_time, strength) in enumerate(strong_onsets):
-            if i % max(1, int(4 - toggles.glitch.intensity * 3)) == 0:
+        # Threshold scales inversely with intensity: at 100% intensity, all onsets trigger
+        threshold = 0.7 * (1 - toggles.glitch.intensity)
+        for onset_time, strength in zip(audio_features.onset_times, audio_features.onset_strengths):
+            if strength >= threshold:
                 glitch_duration = 0.05 + strength * 0.1
                 glitch_triggers.append((onset_time, glitch_duration, strength * toggles.glitch.intensity))
     
@@ -435,8 +438,10 @@ def calculate_effect_parameters(
     # ========================================================================
     ripple_triggers = []
     if toggles.ripple_wave.enabled:
+        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
+        threshold = 0.5 * (1 - toggles.ripple_wave.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= 0.5:
+            if beat_strength >= threshold:
                 ripple_triggers.append((beat_time, beat_strength * toggles.ripple_wave.intensity))
     
     ripple_wave = RippleWaveParams(
@@ -465,9 +470,10 @@ def calculate_effect_parameters(
     # ========================================================================
     strobe_triggers = []
     if toggles.strobe_flash.enabled:
-        # Only on the strongest beats
+        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
+        threshold = 0.8 * (1 - toggles.strobe_flash.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= 0.8:
+            if beat_strength >= threshold:
                 strobe_triggers.append(beat_time)
     
     strobe_flash = StrobeFlashParams(

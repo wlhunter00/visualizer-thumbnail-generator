@@ -29,7 +29,7 @@ from video_renderer import render_video, RenderSettings, AspectRatio
 # Configuration
 AUDIO_START_TIME = 63.0  # Start at 1:03
 DURATION = 30.0          # 30 second clips
-INTENSITY = 1.0          # Max intensity for demos
+INTENSITY = 0.9          # 90% intensity - triggers on most beats while filtering weakest
 FPS = 24                 # Preview quality FPS
 ASPECT_RATIO = AspectRatio.VERTICAL  # 9:16 for demos
 
