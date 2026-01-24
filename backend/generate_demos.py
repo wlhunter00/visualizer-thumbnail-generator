@@ -5,9 +5,12 @@ Generates 30-second demo videos for each of the 13 effects at max intensity.
 Videos are saved to backend/demos/ folder.
 
 Usage:
-    python generate_demos.py
+    python generate_demos.py              # Generate all videos (effects + presets)
+    python generate_demos.py --effects    # Generate only 13 single effects
+    python generate_demos.py --presets    # Generate only curated presets
 """
 
+import argparse
 import json
 import os
 import sys
@@ -531,9 +534,46 @@ def generate_manifest(single_effects: list, presets: list) -> Dict[str, Any]:
 
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Generate demo videos for effects and presets",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python generate_demos.py              # Generate all videos (effects + presets)
+    python generate_demos.py --effects    # Generate only 13 single effects
+    python generate_demos.py -e           # Same as --effects
+    python generate_demos.py --presets    # Generate only curated presets
+    python generate_demos.py -p           # Same as --presets
+        """
+    )
+    parser.add_argument(
+        "-e", "--effects",
+        action="store_true",
+        help="Generate only the 13 single effect demos"
+    )
+    parser.add_argument(
+        "-p", "--presets",
+        action="store_true",
+        help="Generate only the curated preset demos"
+    )
+    args = parser.parse_args()
+    
+    # If neither flag is set, generate both
+    generate_effects = args.effects or (not args.effects and not args.presets)
+    generate_presets = args.presets or (not args.effects and not args.presets)
+    
     print("=" * 60)
     print("Demo Video Generator")
     print("=" * 60)
+    
+    # Show mode
+    if args.effects and not args.presets:
+        print("\nMode: Single Effects Only")
+    elif args.presets and not args.effects:
+        print("\nMode: Curated Presets Only")
+    else:
+        print("\nMode: All Videos (Effects + Presets)")
     
     # Verify demo assets exist
     if not IMAGE_FILE.exists():
@@ -543,7 +583,10 @@ def main():
         print(f"ERROR: Demo audio not found: {AUDIO_FILE}")
         sys.exit(1)
     
-    total_videos = len(SINGLE_EFFECTS) + len(PRESETS)
+    # Calculate total videos based on flags
+    effects_count = len(SINGLE_EFFECTS) if generate_effects else 0
+    presets_count = len(PRESETS) if generate_presets else 0
+    total_videos = effects_count + presets_count
     
     print(f"\nDemo assets:")
     print(f"  Image: {IMAGE_FILE.name}")
@@ -553,8 +596,10 @@ def main():
     print(f"  Duration: {DURATION}s")
     print(f"  Output: {DEMOS_OUTPUT_DIR}")
     print(f"\nVideos to generate:")
-    print(f"  Single effects: {len(SINGLE_EFFECTS)}")
-    print(f"  Curated presets: {len(PRESETS)}")
+    if generate_effects:
+        print(f"  Single effects: {len(SINGLE_EFFECTS)}")
+    if generate_presets:
+        print(f"  Curated presets: {len(PRESETS)}")
     print(f"  Total: {total_videos}")
     
     # Create output directory
@@ -573,44 +618,48 @@ def main():
     current = 0
     
     # Generate videos for single effects
-    print(f"\n{'='*60}")
-    print("PART 1: Single Effects (13 videos)")
-    print("=" * 60)
-    
-    for effect in SINGLE_EFFECTS:
-        current += 1
-        print(f"\n[{current}/{total_videos}] {effect.name} ({effect.category})")
-        try:
-            toggles = create_single_effect_toggles(effect.key)
-            generate_demo_video(effect.key, effect.name, toggles, audio_features, IMAGE_FILE, AUDIO_FILE)
-            print(f"  ✓ Saved: {effect.key}.mp4")
-        except Exception as e:
-            print(f"  ✗ Error: {e}")
-            import traceback
-            traceback.print_exc()
+    if generate_effects:
+        print(f"\n{'='*60}")
+        print("PART 1: Single Effects (13 videos)")
+        print("=" * 60)
+        
+        for effect in SINGLE_EFFECTS:
+            current += 1
+            print(f"\n[{current}/{total_videos}] {effect.name} ({effect.category})")
+            try:
+                toggles = create_single_effect_toggles(effect.key)
+                generate_demo_video(effect.key, effect.name, toggles, audio_features, IMAGE_FILE, AUDIO_FILE)
+                print(f"  ✓ Saved: {effect.key}.mp4")
+            except Exception as e:
+                print(f"  ✗ Error: {e}")
+                import traceback
+                traceback.print_exc()
     
     # Generate videos for presets
-    print(f"\n{'='*60}")
-    print(f"PART 2: Curated Presets ({len(PRESETS)} videos)")
-    print("=" * 60)
+    if generate_presets:
+        print(f"\n{'='*60}")
+        print(f"PART 2: Curated Presets ({len(PRESETS)} videos)")
+        print("=" * 60)
+        
+        for preset in PRESETS:
+            current += 1
+            effect_list = ", ".join(preset.effects.keys())
+            print(f"\n[{current}/{total_videos}] {preset.name}")
+            print(f"  Effects: {effect_list}")
+            try:
+                toggles = create_preset_toggles(preset.effects)
+                generate_demo_video(preset.key, preset.name, toggles, audio_features, IMAGE_FILE, AUDIO_FILE)
+                print(f"  ✓ Saved: {preset.key}.mp4")
+            except Exception as e:
+                print(f"  ✗ Error: {e}")
+                import traceback
+                traceback.print_exc()
     
-    for preset in PRESETS:
-        current += 1
-        effect_list = ", ".join(preset.effects.keys())
-        print(f"\n[{current}/{total_videos}] {preset.name}")
-        print(f"  Effects: {effect_list}")
-        try:
-            toggles = create_preset_toggles(preset.effects)
-            generate_demo_video(preset.key, preset.name, toggles, audio_features, IMAGE_FILE, AUDIO_FILE)
-            print(f"  ✓ Saved: {preset.key}.mp4")
-        except Exception as e:
-            print(f"  ✗ Error: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    # Generate manifest
+    # Generate manifest (always include all available data for reference)
     print(f"\nGenerating manifest.json...")
-    manifest = generate_manifest(SINGLE_EFFECTS, PRESETS)
+    effects_for_manifest = SINGLE_EFFECTS if generate_effects else []
+    presets_for_manifest = PRESETS if generate_presets else []
+    manifest = generate_manifest(effects_for_manifest, presets_for_manifest)
     manifest_path = DEMOS_OUTPUT_DIR / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)

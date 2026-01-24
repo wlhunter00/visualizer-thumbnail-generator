@@ -127,13 +127,16 @@ class ParticleBurstParams:
     enabled: bool = True
     intensity: float = 0.5
     particle_count: int = 50
-    colors: List[Tuple[int, int, int]] = field(default_factory=lambda: [(255, 200, 100)])
+    colors: List[Tuple[int, int, int]] = field(default_factory=lambda: [(255, 255, 255), (255, 220, 180), (200, 220, 255)])
     size_range: Tuple[float, float] = (3, 12)
     speed: float = 200.0  # Pixels per second
     lifetime: float = 1.0  # Seconds
     triggers: List[Tuple[float, float]] = field(default_factory=list)  # (time, strength)
-    origin_x: float = 0.5  # Normalized position
-    origin_y: float = 0.5
+    # Full subject bounds for spawning from perimeter
+    bounds_x: float = 0.25  # Normalized position
+    bounds_y: float = 0.25
+    bounds_w: float = 0.5
+    bounds_h: float = 0.5
 
 
 @dataclass
@@ -142,12 +145,14 @@ class EnergyTrailsParams:
     enabled: bool = False
     intensity: float = 0.4
     trail_count: int = 8
-    colors: List[Tuple[int, int, int]] = field(default_factory=lambda: [(255, 200, 100)])
+    colors: List[Tuple[int, int, int]] = field(default_factory=lambda: [(255, 255, 255), (200, 220, 255)])
     width: float = 2.0
-    orbit_radius: float = 100.0
     speed: float = 1.0  # Revolutions per second
-    center_x: float = 0.5
-    center_y: float = 0.5
+    # Full subject bounds for elliptical orbit
+    bounds_x: float = 0.25
+    bounds_y: float = 0.25
+    bounds_w: float = 0.5
+    bounds_h: float = 0.5
 
 
 @dataclass
@@ -179,8 +184,11 @@ class RippleWaveParams:
     """Parameters for ripple wave effect."""
     enabled: bool = False
     intensity: float = 0.4
-    center_x: float = 0.5
-    center_y: float = 0.5
+    # Full subject bounds for elliptical ripple origin
+    bounds_x: float = 0.25
+    bounds_y: float = 0.25
+    bounds_w: float = 0.5
+    bounds_h: float = 0.5
     wavelength: float = 50.0
     amplitude: float = 10.0
     speed: float = 200.0  # Pixels per second
@@ -211,8 +219,8 @@ class VignettePulseParams:
     """Parameters for vignette pulse effect."""
     enabled: bool = True
     intensity: float = 0.4
-    base_strength: float = 0.3
-    pulse_strength: float = 0.2
+    base_strength: float = 0.5
+    pulse_strength: float = 0.4
     triggers: List[Tuple[float, float]] = field(default_factory=list)
 
 
@@ -252,6 +260,105 @@ def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     """Convert hex color string to RGB tuple."""
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+
+def rgb_to_hsv(r: int, g: int, b: int) -> Tuple[float, float, float]:
+    """Convert RGB to HSV (hue 0-360, saturation 0-1, value 0-1)."""
+    r, g, b = r / 255.0, g / 255.0, b / 255.0
+    max_c = max(r, g, b)
+    min_c = min(r, g, b)
+    diff = max_c - min_c
+    
+    # Value
+    v = max_c
+    
+    # Saturation
+    s = 0 if max_c == 0 else diff / max_c
+    
+    # Hue
+    if diff == 0:
+        h = 0
+    elif max_c == r:
+        h = 60 * (((g - b) / diff) % 6)
+    elif max_c == g:
+        h = 60 * (((b - r) / diff) + 2)
+    else:
+        h = 60 * (((r - g) / diff) + 4)
+    
+    return (h, s, v)
+
+
+def hsv_to_rgb(h: float, s: float, v: float) -> Tuple[int, int, int]:
+    """Convert HSV to RGB."""
+    c = v * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = v - c
+    
+    if h < 60:
+        r, g, b = c, x, 0
+    elif h < 120:
+        r, g, b = x, c, 0
+    elif h < 180:
+        r, g, b = 0, c, x
+    elif h < 240:
+        r, g, b = 0, x, c
+    elif h < 300:
+        r, g, b = x, 0, c
+    else:
+        r, g, b = c, 0, x
+    
+    return (int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
+
+
+def boost_color_for_particles(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    """
+    Boost a color's saturation and brightness to make it more visible as a particle.
+    Particles need to be bright and saturated to stand out against the background.
+    """
+    h, s, v = rgb_to_hsv(color[0], color[1], color[2])
+    
+    # Boost saturation (particles look better when colorful)
+    s = min(1.0, s * 1.3 + 0.2)
+    
+    # Boost brightness (particles need to be visible)
+    v = min(1.0, v * 1.2 + 0.3)
+    
+    # Ensure minimum brightness
+    v = max(0.6, v)
+    
+    return hsv_to_rgb(h, s, v)
+
+
+def prepare_particle_colors(colors: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
+    """
+    Prepare colors for particle effects by boosting saturation/brightness
+    and filtering out colors that are too dark.
+    """
+    if not colors:
+        return [(255, 255, 255), (255, 220, 150), (200, 220, 255)]  # Neutral bright defaults
+    
+    boosted = []
+    for color in colors:
+        # Skip very dark colors (they won't be visible as particles)
+        brightness = (color[0] + color[1] + color[2]) / 3
+        if brightness < 40:
+            continue
+        
+        boosted_color = boost_color_for_particles(color)
+        boosted.append(boosted_color)
+    
+    # If all colors were filtered out, use boosted versions of originals
+    if not boosted:
+        boosted = [boost_color_for_particles(c) for c in colors[:3]]
+    
+    # Ensure we have at least 2 colors for variety
+    if len(boosted) == 1:
+        # Add a lighter variation
+        h, s, v = rgb_to_hsv(boosted[0][0], boosted[0][1], boosted[0][2])
+        lighter = hsv_to_rgb(h, max(0, s - 0.2), min(1.0, v + 0.2))
+        boosted.append(lighter)
+    
+    return boosted
 
 
 def calculate_effect_parameters(
@@ -360,32 +467,41 @@ def calculate_effect_parameters(
             if beat_strength >= threshold:
                 burst_triggers.append((beat_time, beat_strength * toggles.particle_burst.intensity))
     
+    # Prepare particle colors - boost saturation/brightness for visibility
+    particle_colors = prepare_particle_colors(colors_rgb[:5])
+    
     particle_burst = ParticleBurstParams(
         enabled=toggles.particle_burst.enabled,
         intensity=toggles.particle_burst.intensity,
         particle_count=int(30 + toggles.particle_burst.intensity * 70),
-        colors=colors_rgb[:3],
+        colors=particle_colors,
         size_range=(2 + toggles.particle_burst.intensity * 2, 8 + toggles.particle_burst.intensity * 8),
         speed=150 + toggles.particle_burst.intensity * 150,
         lifetime=0.8 + toggles.particle_burst.intensity * 0.6,
         triggers=burst_triggers,
-        origin_x=bounds.center_x,
-        origin_y=bounds.center_y
+        bounds_x=bounds.x,
+        bounds_y=bounds.y,
+        bounds_w=bounds.w,
+        bounds_h=bounds.h
     )
     
     # ========================================================================
     # ENERGY TRAILS
     # ========================================================================
+    # Use boosted colors for energy trails too (they need to be visible)
+    trail_colors = prepare_particle_colors(colors_rgb[:3])[:2]
+    
     energy_trails = EnergyTrailsParams(
         enabled=toggles.energy_trails.enabled,
         intensity=toggles.energy_trails.intensity,
         trail_count=4 + int(toggles.energy_trails.intensity * 8),
-        colors=colors_rgb[:2],
+        colors=trail_colors,
         width=1 + toggles.energy_trails.intensity * 3,
-        orbit_radius=50 + toggles.energy_trails.intensity * 100,
         speed=0.5 + toggles.energy_trails.intensity * 1.0,
-        center_x=bounds.center_x,
-        center_y=bounds.center_y
+        bounds_x=bounds.x,
+        bounds_y=bounds.y,
+        bounds_w=bounds.w,
+        bounds_h=bounds.h
     )
     
     # ========================================================================
@@ -415,12 +531,25 @@ def calculate_effect_parameters(
     # ========================================================================
     glitch_triggers = []
     if toggles.glitch.enabled:
+        intensity = toggles.glitch.intensity
         # Threshold scales inversely with intensity: at 100% intensity, all onsets trigger
-        threshold = 0.7 * (1 - toggles.glitch.intensity)
+        threshold = 0.5 * (1 - intensity)
+        
+        # Trigger on onset events
         for onset_time, strength in zip(audio_features.onset_times, audio_features.onset_strengths):
             if strength >= threshold:
-                glitch_duration = 0.05 + strength * 0.1
-                glitch_triggers.append((onset_time, glitch_duration, strength * toggles.glitch.intensity))
+                # Longer glitch duration at higher intensities
+                glitch_duration = 0.08 + strength * 0.15 + intensity * 0.12
+                glitch_triggers.append((onset_time, glitch_duration, strength * intensity))
+        
+        # At high intensity, also trigger on beats for more frequent glitching
+        if intensity > 0.5:
+            beat_threshold = 0.4 * (1 - intensity)
+            for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
+                if beat_strength >= beat_threshold:
+                    glitch_duration = 0.06 + beat_strength * 0.1 + intensity * 0.08
+                    # Slightly lower intensity for beat-triggered glitches to vary the effect
+                    glitch_triggers.append((beat_time, glitch_duration, beat_strength * intensity * 0.8))
     
     glitch = GlitchParams(
         enabled=toggles.glitch.enabled,
@@ -447,8 +576,10 @@ def calculate_effect_parameters(
     ripple_wave = RippleWaveParams(
         enabled=toggles.ripple_wave.enabled,
         intensity=toggles.ripple_wave.intensity,
-        center_x=bounds.center_x,
-        center_y=bounds.center_y,
+        bounds_x=bounds.x,
+        bounds_y=bounds.y,
+        bounds_w=bounds.w,
+        bounds_h=bounds.h,
         wavelength=30 + (1 - toggles.ripple_wave.intensity) * 40,
         amplitude=5 + toggles.ripple_wave.intensity * 15,
         speed=150 + toggles.ripple_wave.intensity * 150,
@@ -495,8 +626,8 @@ def calculate_effect_parameters(
     vignette_pulse = VignettePulseParams(
         enabled=toggles.vignette_pulse.enabled,
         intensity=toggles.vignette_pulse.intensity,
-        base_strength=0.2 + toggles.vignette_pulse.intensity * 0.2,
-        pulse_strength=0.1 + toggles.vignette_pulse.intensity * 0.2,
+        base_strength=0.3 + toggles.vignette_pulse.intensity * 0.4,
+        pulse_strength=0.3 + toggles.vignette_pulse.intensity * 0.5,
         triggers=vignette_triggers
     )
     
@@ -624,8 +755,10 @@ def get_effect_value_at_time(
                 active_bursts.append({
                     "progress": progress,
                     "strength": strength,
-                    "origin_x": burst.origin_x,
-                    "origin_y": burst.origin_y
+                    "bounds_x": burst.bounds_x,
+                    "bounds_y": burst.bounds_y,
+                    "bounds_w": burst.bounds_w,
+                    "bounds_h": burst.bounds_h
                 })
         values["particle_bursts"] = active_bursts
         values["particle_burst_params"] = {
@@ -648,10 +781,11 @@ def get_effect_value_at_time(
             "count": trails.trail_count,
             "colors": trails.colors,
             "width": trails.width,
-            "orbit_radius": trails.orbit_radius,
+            "bounds_x": trails.bounds_x,
+            "bounds_y": trails.bounds_y,
+            "bounds_w": trails.bounds_w,
+            "bounds_h": trails.bounds_h,
             "speed": trails.speed,
-            "center_x": trails.center_x,
-            "center_y": trails.center_y,
             "time": time,
             "intensity": trails.intensity
         }
@@ -717,8 +851,10 @@ def get_effect_value_at_time(
                     "radius": radius,
                     "amplitude": ripple.amplitude * strength * fade,
                     "wavelength": ripple.wavelength,
-                    "center_x": ripple.center_x,
-                    "center_y": ripple.center_y
+                    "bounds_x": ripple.bounds_x,
+                    "bounds_y": ripple.bounds_y,
+                    "bounds_w": ripple.bounds_w,
+                    "bounds_h": ripple.bounds_h
                 })
         values["ripple_waves"] = active_ripples
         values["ripple_intensity"] = ripple.intensity
@@ -759,12 +895,14 @@ def get_effect_value_at_time(
         vignette_strength = vignette.base_strength
         for trigger_time, strength in vignette.triggers:
             dt = time - trigger_time
-            if 0 <= dt < 0.3:
-                if dt < 0.05:
-                    pulse = dt / 0.05
-                else:
-                    pulse = 1 - (dt - 0.05) / 0.25
-                vignette_strength = max(vignette_strength, vignette.base_strength + vignette.pulse_strength * pulse * strength)
+            if 0 <= dt < 0.4:  # Slightly longer duration for visibility
+                if dt < 0.08:  # Slightly longer attack
+                    pulse = dt / 0.08
+                else:  # Slower decay
+                    pulse = 1 - (dt - 0.08) / 0.32
+                # Apply pulse additively with full strength
+                pulse_amount = vignette.pulse_strength * pulse * (0.5 + strength * 0.5)
+                vignette_strength = max(vignette_strength, vignette.base_strength + pulse_amount)
         values["vignette_strength"] = vignette_strength
     else:
         values["vignette_strength"] = 0

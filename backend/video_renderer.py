@@ -70,24 +70,39 @@ class ParticleSystem:
     def __init__(self):
         self.particles: List[Particle] = []
     
-    def spawn_burst(
+    def spawn_burst_from_bounds(
         self,
-        x: float, y: float,
+        bounds_x: float, bounds_y: float,
+        bounds_w: float, bounds_h: float,
         count: int,
         colors: List[Tuple[int, int, int]],
         size_range: Tuple[float, float],
         speed: float,
         lifetime: float,
-        time: float
+        time: float,
+        width: int, height: int
     ):
-        """Spawn a burst of particles."""
+        """Spawn particles from the perimeter of the subject's elliptical bounds."""
+        # Calculate center and radii in pixels
+        center_x = (bounds_x + bounds_w / 2) * width
+        center_y = (bounds_y + bounds_h / 2) * height
+        radius_x = (bounds_w / 2) * width * 1.1  # Slightly outside bounds
+        radius_y = (bounds_h / 2) * height * 1.1
+        
         for _ in range(count):
+            # Random angle around the ellipse perimeter
             angle = random.random() * 2 * math.pi
+            
+            # Spawn position on ellipse perimeter
+            spawn_x = center_x + math.cos(angle) * radius_x
+            spawn_y = center_y + math.sin(angle) * radius_y
+            
+            # Velocity radiates outward from center
             velocity = speed * (0.5 + random.random() * 0.5)
             
             self.particles.append(Particle(
-                x=x,
-                y=y,
+                x=spawn_x,
+                y=spawn_y,
                 vx=math.cos(angle) * velocity,
                 vy=math.sin(angle) * velocity,
                 size=random.uniform(size_range[0], size_range[1]),
@@ -296,20 +311,24 @@ def render_video(
             bursts = effects.get("particle_bursts", [])
             burst_params = effects.get("particle_burst_params", {})
             
-            # Spawn new bursts
+            # Spawn new bursts from subject perimeter
             for i, burst in enumerate(bursts):
-                burst_id = (burst.get("origin_x", 0.5), burst.get("origin_y", 0.5), i)
+                burst_id = (burst.get("bounds_x", 0.25), burst.get("bounds_y", 0.25), i)
                 if burst.get("progress", 0) < 0.1 and burst_id not in previous_bursts:
                     previous_bursts.add(burst_id)
-                    particle_system.spawn_burst(
-                        x=burst.get("origin_x", 0.5) * width,
-                        y=burst.get("origin_y", 0.5) * height,
+                    particle_system.spawn_burst_from_bounds(
+                        bounds_x=burst.get("bounds_x", 0.25),
+                        bounds_y=burst.get("bounds_y", 0.25),
+                        bounds_w=burst.get("bounds_w", 0.5),
+                        bounds_h=burst.get("bounds_h", 0.5),
                         count=burst_params.get("count", 50),
-                        colors=burst_params.get("colors", [(255, 200, 100)]),
+                        colors=burst_params.get("colors", [(255, 255, 255), (255, 220, 180), (200, 220, 255)]),
                         size_range=burst_params.get("size_range", (3, 12)),
                         speed=burst_params.get("speed", 200),
                         lifetime=burst_params.get("lifetime", 1.0),
-                        time=time
+                        time=time,
+                        width=width,
+                        height=height
                     )
             
             # Update and draw particles
@@ -510,13 +529,25 @@ def apply_ripple_wave(
     width: int, height: int,
     intensity: float
 ) -> Image.Image:
-    """Apply ripple wave distortion using vectorized NumPy operations."""
+    """Apply elliptical ripple wave distortion originating from subject bounds."""
     if intensity < 0.01:
         return image
     
-    center_x = ripple.get("center_x", 0.5) * width
-    center_y = ripple.get("center_y", 0.5) * height
-    radius = ripple.get("radius", 100)
+    # Get bounds for elliptical ripple origin
+    bounds_x = ripple.get("bounds_x", 0.25)
+    bounds_y = ripple.get("bounds_y", 0.25)
+    bounds_w = ripple.get("bounds_w", 0.5)
+    bounds_h = ripple.get("bounds_h", 0.5)
+    
+    # Center of the ellipse in pixels
+    center_x = (bounds_x + bounds_w / 2) * width
+    center_y = (bounds_y + bounds_h / 2) * height
+    
+    # Ellipse radii (ripple starts from edge of subject)
+    radius_x = (bounds_w / 2) * width
+    radius_y = (bounds_h / 2) * height
+    
+    ripple_radius = ripple.get("radius", 100)  # How far the ripple has expanded
     amplitude = ripple.get("amplitude", 10) * intensity
     wavelength = ripple.get("wavelength", 50)
     
@@ -529,18 +560,26 @@ def apply_ripple_wave(
     # Create coordinate grids
     y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
     
-    # Calculate distance and angle from center
-    dx = x_coords - center_x
-    dy = y_coords - center_y
-    dist = np.sqrt(dx * dx + dy * dy)
-    angle = np.arctan2(dy, dx)
+    # Calculate normalized elliptical distance from center
+    # Points on the ellipse have ellipse_dist = 1.0
+    dx = (x_coords - center_x) / max(radius_x, 1)
+    dy = (y_coords - center_y) / max(radius_y, 1)
+    ellipse_dist = np.sqrt(dx * dx + dy * dy)
     
-    # Create mask for affected pixels (within 2 wavelengths of ripple radius)
-    affected_mask = np.abs(dist - radius) < wavelength * 2
+    # Convert to actual distance from ellipse edge
+    # dist_from_edge = (ellipse_dist - 1.0) * average_radius
+    avg_radius = (radius_x + radius_y) / 2
+    dist_from_edge = (ellipse_dist - 1.0) * avg_radius
+    
+    # Angle for displacement direction
+    angle = np.arctan2(y_coords - center_y, x_coords - center_x)
+    
+    # Create mask for affected pixels (ripple expands outward from ellipse edge)
+    affected_mask = (dist_from_edge >= 0) & (np.abs(dist_from_edge - ripple_radius) < wavelength * 2)
     
     # Calculate displacement for all pixels (vectorized)
-    wave = np.sin((dist - radius) * 2 * np.pi / wavelength)
-    gaussian_falloff = np.exp(-((dist - radius) / wavelength) ** 2)
+    wave = np.sin((dist_from_edge - ripple_radius) * 2 * np.pi / wavelength)
+    gaussian_falloff = np.exp(-((dist_from_edge - ripple_radius) / wavelength) ** 2)
     displacement = wave * amplitude * gaussian_falloff
     
     # Apply displacement only where affected
@@ -743,7 +782,7 @@ def apply_energy_trails(
     params: Dict[str, Any],
     width: int, height: int
 ) -> Image.Image:
-    """Draw energy trails orbiting the element."""
+    """Draw energy trails orbiting the element in an ellipse matching subject bounds."""
     if not params:
         return image
     
@@ -753,12 +792,23 @@ def apply_energy_trails(
     count = params.get("count", 8)
     colors = params.get("colors", [(255, 200, 100)])
     trail_width = params.get("width", 2)
-    orbit_radius = params.get("orbit_radius", 100)
     speed = params.get("speed", 1.0)
-    center_x = params.get("center_x", 0.5) * width
-    center_y = params.get("center_y", 0.5) * height
     time = params.get("time", 0)
     intensity = params.get("intensity", 0.5)
+    
+    # Get bounds and calculate elliptical orbit
+    bounds_x = params.get("bounds_x", 0.25)
+    bounds_y = params.get("bounds_y", 0.25)
+    bounds_w = params.get("bounds_w", 0.5)
+    bounds_h = params.get("bounds_h", 0.5)
+    
+    # Center of the ellipse
+    center_x = (bounds_x + bounds_w / 2) * width
+    center_y = (bounds_y + bounds_h / 2) * height
+    
+    # Orbit radii based on subject size (slightly larger than bounds)
+    orbit_radius_x = (bounds_w / 2) * width * 1.3
+    orbit_radius_y = (bounds_h / 2) * height * 1.3
     
     for i in range(count):
         base_angle = (i / count) * 2 * math.pi
@@ -768,14 +818,17 @@ def apply_energy_trails(
         color = colors[i % len(colors)]
         alpha = int(intensity * 200)
         
-        # Draw trail as arc
+        # Draw trail as arc following ellipse
         trail_length = 0.3  # Radians
         points = []
         for t in np.linspace(0, trail_length, 20):
             a = angle - t
-            r = orbit_radius * (1 - t / trail_length * 0.3)
-            px = center_x + math.cos(a) * r
-            py = center_y + math.sin(a) * r
+            # Fade radius as trail extends
+            fade_factor = (1 - t / trail_length * 0.3)
+            rx = orbit_radius_x * fade_factor
+            ry = orbit_radius_y * fade_factor
+            px = center_x + math.cos(a) * rx
+            py = center_y + math.sin(a) * ry
             points.append((px, py))
         
         # Draw with fading alpha
@@ -919,14 +972,36 @@ def apply_strobe_flash(
     intensity: float,
     color: Tuple[int, int, int]
 ) -> Image.Image:
-    """Apply strobe flash effect."""
+    """Apply strobe flash effect with radial falloff - bright center, fading edges."""
     if intensity < 0.01:
         return image
     
     width, height = image.size
+    cx, cy = width // 2, height // 2
     
-    # Create flash overlay
-    flash = Image.new("RGBA", (width, height), (*color, int(intensity * 200)))
+    # Create coordinate grids for radial falloff
+    y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
+    
+    # Calculate distance from center
+    max_dist = math.sqrt(cx * cx + cy * cy)
+    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
+    normalized_dist = dist / max_dist
+    
+    # Create radial falloff - bright in center, fades toward edges
+    # Using smooth falloff curve
+    falloff = 1 - (normalized_dist ** 0.7)
+    falloff = np.clip(falloff, 0, 1)
+    
+    # Reduce max intensity significantly - 80 alpha max instead of 200
+    # This creates a bright highlight rather than whiteout
+    max_alpha = intensity * 80
+    alpha_array = (falloff * max_alpha).astype(np.uint8)
+    
+    # Create the flash overlay with gradient alpha
+    flash_rgb = Image.new("RGB", (width, height), color)
+    flash_alpha = Image.fromarray(alpha_array, mode="L")
+    flash = flash_rgb.copy()
+    flash.putalpha(flash_alpha)
     
     return Image.alpha_composite(image, flash)
 

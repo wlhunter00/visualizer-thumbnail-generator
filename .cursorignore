@@ -1,0 +1,3 @@
+# Allow access to demo videos (git ignored but needed for Cursor)
+!backend/demos/
+
