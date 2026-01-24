@@ -310,32 +310,46 @@ def hsv_to_rgb(h: float, s: float, v: float) -> Tuple[int, int, int]:
     return (int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
 
 
-def boost_color_for_particles(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
+def boost_color_for_particles(color: Tuple[int, int, int], preserve_palette: bool = False) -> Tuple[int, int, int]:
     """
-    Boost a color's saturation and brightness to make it more visible as a particle.
-    Particles need to be bright and saturated to stand out against the background.
+    Boost a color's brightness to make it more visible as a particle.
+    When preserve_palette is True, saturation is kept closer to original.
     """
     h, s, v = rgb_to_hsv(color[0], color[1], color[2])
     
-    # Boost saturation (particles look better when colorful)
-    s = min(1.0, s * 1.3 + 0.2)
+    if preserve_palette:
+        # Preserve saturation closer to original - don't add color that isn't there
+        s = min(1.0, s * 1.1)
+    else:
+        # Slight saturation boost for multi-color palettes
+        s = min(1.0, s * 1.15 + 0.05)
     
     # Boost brightness (particles need to be visible)
-    v = min(1.0, v * 1.2 + 0.3)
+    v = min(1.0, v * 1.2 + 0.2)
     
     # Ensure minimum brightness
-    v = max(0.6, v)
+    v = max(0.5, v)
     
     return hsv_to_rgb(h, s, v)
 
 
 def prepare_particle_colors(colors: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
     """
-    Prepare colors for particle effects by boosting saturation/brightness
-    and filtering out colors that are too dark.
+    Prepare colors for particle effects by boosting brightness for visibility.
+    Respects the original palette - if image has limited colors, particles stay limited.
     """
     if not colors:
-        return [(255, 255, 255), (255, 220, 150), (200, 220, 255)]  # Neutral bright defaults
+        return [(255, 255, 255)]  # Simple white default
+    
+    # Check if the palette is essentially monochromatic (low hue variance)
+    hues = []
+    for color in colors:
+        h, s, v = rgb_to_hsv(color[0], color[1], color[2])
+        if s > 0.1:  # Only consider saturated colors for hue analysis
+            hues.append(h)
+    
+    # Determine if this is a limited/monochromatic palette
+    is_limited_palette = len(hues) <= 1 or (len(hues) > 1 and _hue_variance(hues) < 30)
     
     boosted = []
     for color in colors:
@@ -344,21 +358,35 @@ def prepare_particle_colors(colors: List[Tuple[int, int, int]]) -> List[Tuple[in
         if brightness < 40:
             continue
         
-        boosted_color = boost_color_for_particles(color)
+        boosted_color = boost_color_for_particles(color, preserve_palette=is_limited_palette)
         boosted.append(boosted_color)
     
     # If all colors were filtered out, use boosted versions of originals
     if not boosted:
-        boosted = [boost_color_for_particles(c) for c in colors[:3]]
+        boosted = [boost_color_for_particles(c, preserve_palette=is_limited_palette) for c in colors[:3]]
     
-    # Ensure we have at least 2 colors for variety
-    if len(boosted) == 1:
-        # Add a lighter variation
-        h, s, v = rgb_to_hsv(boosted[0][0], boosted[0][1], boosted[0][2])
-        lighter = hsv_to_rgb(h, max(0, s - 0.2), min(1.0, v + 0.2))
-        boosted.append(lighter)
+    # For limited palettes, just return what we have - don't artificially add colors
+    # For varied palettes, still don't add extra - use what's in the image
+    return boosted if boosted else [(255, 255, 255)]
+
+
+def _hue_variance(hues: List[float]) -> float:
+    """Calculate hue variance, accounting for circular nature of hue (0-360)."""
+    if len(hues) < 2:
+        return 0
     
-    return boosted
+    # Find the minimum spread considering circular wraparound
+    hues = sorted(hues)
+    max_gap = 0
+    for i in range(len(hues)):
+        next_i = (i + 1) % len(hues)
+        gap = hues[next_i] - hues[i]
+        if next_i == 0:  # Wrap around
+            gap = (360 - hues[i]) + hues[next_i]
+        max_gap = max(max_gap, gap)
+    
+    # Variance is 360 minus the largest gap
+    return 360 - max_gap
 
 
 def calculate_effect_parameters(
@@ -461,8 +489,11 @@ def calculate_effect_parameters(
     # ========================================================================
     burst_triggers = []
     if toggles.particle_burst.enabled:
-        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
-        threshold = 0.5 * (1 - toggles.particle_burst.intensity)
+        # Lower base threshold so bursts trigger at all intensity levels
+        # At 0% intensity: threshold = 0.4 (only strongest beats)
+        # At 50% intensity: threshold = 0.2 (moderate beats)
+        # At 100% intensity: threshold = 0 (all beats)
+        threshold = 0.4 * (1 - toggles.particle_burst.intensity)
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
             if beat_strength >= threshold:
                 burst_triggers.append((beat_time, beat_strength * toggles.particle_burst.intensity))

@@ -287,15 +287,7 @@ def render_video(
             # ================================================================
             # LAYER 6: ECHO TRAIL
             # ================================================================
-            if effects.get("echo_trail_enabled", False):
-                frame = apply_echo_trail(
-                    frame, echo_frames,
-                    effects.get("echo_trail_count", 5),
-                    effects.get("echo_trail_decay", 0.7),
-                    effects.get("echo_trail_intensity", 0.5)
-                )
-            
-            # Store frame for echo effect, or clear frames if effect is disabled
+            # Store frame BEFORE applying echo (so we echo clean frames, not echoes of echoes)
             if effects.get("echo_trail_enabled", False):
                 echo_frames.append(frame.copy())
                 max_frames = effects.get("echo_trail_count", 5) + 2
@@ -304,6 +296,15 @@ def render_video(
             elif echo_frames:
                 # Clear accumulated frames when effect is disabled to free memory
                 echo_frames.clear()
+            
+            # Now apply the echo trail effect
+            if effects.get("echo_trail_enabled", False):
+                frame = apply_echo_trail(
+                    frame, echo_frames[:-1],  # Exclude current frame from echoes
+                    effects.get("echo_trail_count", 5),
+                    effects.get("echo_trail_decay", 0.7),
+                    effects.get("echo_trail_intensity", 0.5)
+                )
             
             # ================================================================
             # LAYER 7: PARTICLE BURST
@@ -705,46 +706,84 @@ def apply_neon_outline(
     glow_radius: float,
     width: int, height: int
 ) -> Image.Image:
-    """Draw a neon outline around the element."""
+    """Draw a neon outline tracing the actual edges of the subject."""
     if intensity < 0.01:
         return image
     
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    # Convert to numpy for edge detection
+    img_array = np.array(image.convert("RGB"))
     
-    x = int(bounds.get("x", 0.25) * width)
-    y = int(bounds.get("y", 0.25) * height)
-    w = int(bounds.get("w", 0.5) * width)
-    h = int(bounds.get("h", 0.5) * height)
+    # Convert to grayscale for edge detection
+    gray = np.mean(img_array, axis=2).astype(np.uint8)
     
-    alpha = int(intensity * 255)
-    outline_color = (*color, alpha)
+    # Apply Sobel edge detection
+    # Sobel kernels for x and y gradients
+    sobel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+    sobel_y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
     
-    # Draw outline
-    for offset in range(int(line_width)):
-        draw.ellipse(
-            [x - offset, y - offset, x + w + offset, y + h + offset],
-            outline=outline_color,
-            width=2
-        )
+    # Pad image for convolution
+    padded = np.pad(gray.astype(np.float32), 1, mode='edge')
     
-    # Add glow
+    # Manual convolution for edge detection
+    gx = np.zeros_like(gray, dtype=np.float32)
+    gy = np.zeros_like(gray, dtype=np.float32)
+    
+    for i in range(3):
+        for j in range(3):
+            gx += sobel_x[i, j] * padded[i:i+gray.shape[0], j:j+gray.shape[1]]
+            gy += sobel_y[i, j] * padded[i:i+gray.shape[0], j:j+gray.shape[1]]
+    
+    # Calculate edge magnitude
+    edges = np.sqrt(gx**2 + gy**2)
+    
+    # Normalize and threshold edges
+    edges = (edges / edges.max() * 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)
+    
+    # Apply threshold to get clean edges
+    threshold = 30
+    edge_mask = (edges > threshold).astype(np.uint8) * 255
+    
+    # Create edge image from the mask
+    edge_img = Image.fromarray(edge_mask, mode='L')
+    
+    # Dilate the edges slightly to make them more visible
+    edge_img = edge_img.filter(ImageFilter.MaxFilter(size=int(line_width) * 2 + 1))
+    
+    # Create the neon outline overlay
+    outline_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    
+    # Colorize the edges with the neon color
+    edge_array = np.array(edge_img)
+    outline_array = np.zeros((height, width, 4), dtype=np.uint8)
+    
+    # Set color where edges exist
+    edge_mask_bool = edge_array > 128
+    outline_array[edge_mask_bool, 0] = color[0]
+    outline_array[edge_mask_bool, 1] = color[1]
+    outline_array[edge_mask_bool, 2] = color[2]
+    outline_array[edge_mask_bool, 3] = int(intensity * 255)
+    
+    outline_overlay = Image.fromarray(outline_array, mode='RGBA')
+    
+    # Create glow effect by blurring the outline
     glow_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow_overlay)
+    glow_array = np.zeros((height, width, 4), dtype=np.uint8)
     
-    for i in range(int(glow_radius), 0, -2):
-        glow_alpha = int(intensity * 50 * (i / glow_radius))
-        glow_color = (*color, glow_alpha)
-        glow_draw.ellipse(
-            [x - i, y - i, x + w + i, y + h + i],
-            outline=glow_color,
-            width=3
-        )
+    # More intense color for glow base
+    glow_array[edge_mask_bool, 0] = color[0]
+    glow_array[edge_mask_bool, 1] = color[1]
+    glow_array[edge_mask_bool, 2] = color[2]
+    glow_array[edge_mask_bool, 3] = int(intensity * 180)
     
+    glow_overlay = Image.fromarray(glow_array, mode='RGBA')
+    
+    # Apply multiple blur passes for soft glow
+    glow_overlay = glow_overlay.filter(ImageFilter.GaussianBlur(radius=glow_radius))
     glow_overlay = glow_overlay.filter(ImageFilter.GaussianBlur(radius=glow_radius / 2))
     
+    # Composite: glow first (underneath), then sharp outline on top
     result = Image.alpha_composite(image, glow_overlay)
-    return Image.alpha_composite(result, overlay)
+    return Image.alpha_composite(result, outline_overlay)
 
 
 def apply_echo_trail(
@@ -752,27 +791,70 @@ def apply_echo_trail(
     echo_frames: List[Image.Image],
     trail_count: int,
     decay: float,
-    intensity: float
+    intensity: float,
+    offset_x: float = 0,
+    offset_y: float = 0
 ) -> Image.Image:
-    """Apply echo/ghost trail effect."""
+    """Apply echo/ghost trail effect with offset to create visible trailing.
+    
+    Each echo is offset progressively further based on age, creating
+    a motion blur / speed lines effect even on static images.
+    
+    Args:
+        offset_x, offset_y: Per-frame offset in pixels. Older echoes are
+            offset by age * offset. If both are 0, uses a default diagonal offset.
+    """
     if not echo_frames or intensity < 0.01:
         return image
     
-    result = image.copy()
+    width, height = image.size
     
-    # Draw older frames with decreasing opacity
+    # Default offset creates a subtle diagonal trailing effect
+    # Scale offset based on image size for consistent appearance
+    if offset_x == 0 and offset_y == 0:
+        base_offset = max(width, height) * 0.008 * intensity  # ~0.8% of image per echo
+        offset_x = base_offset
+        offset_y = base_offset * 0.5  # Slightly more horizontal than vertical
+    
+    # Start with transparent canvas to composite echoes underneath
+    result = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    
+    # Draw older echoes first (furthest back), working toward newer
     frames_to_use = echo_frames[-trail_count:]
-    for i, old_frame in enumerate(reversed(frames_to_use)):
-        age = i + 1
+    
+    # Process from oldest to newest (oldest drawn first, underneath)
+    for i, old_frame in enumerate(frames_to_use):
+        # Age: oldest frame has highest age
+        age = len(frames_to_use) - i
         alpha = intensity * (decay ** age)
         
-        if alpha < 0.05:
+        if alpha < 0.03:
             continue
         
-        # Blend old frame
-        blend_frame = old_frame.copy()
-        blend_frame.putalpha(int(alpha * 255))
-        result = Image.alpha_composite(result, blend_frame)
+        # Calculate offset for this echo (older = further offset)
+        echo_offset_x = int(offset_x * age)
+        echo_offset_y = int(offset_y * age)
+        
+        # Create offset version of the frame
+        offset_frame = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        
+        # Paste the old frame with offset (crop to stay within bounds)
+        paste_x = -echo_offset_x
+        paste_y = -echo_offset_y
+        offset_frame.paste(old_frame, (paste_x, paste_y))
+        
+        # Apply alpha to the offset frame
+        # We need to modify just the alpha channel, preserving RGB
+        r, g, b, a = offset_frame.split()
+        # Multiply existing alpha by our decay alpha
+        a = a.point(lambda x: int(x * alpha))
+        offset_frame = Image.merge("RGBA", (r, g, b, a))
+        
+        # Composite onto result
+        result = Image.alpha_composite(result, offset_frame)
+    
+    # Finally composite the current image on top
+    result = Image.alpha_composite(result, image)
     
     return result
 
