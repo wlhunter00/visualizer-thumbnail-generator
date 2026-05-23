@@ -436,3 +436,124 @@ def effect_suggestion_to_dict(suggestion: EffectSuggestion) -> Dict[str, Any]:
         "background_dim": suggestion.background_dim
     }
 
+
+# ============================================================================
+# Image Transformation
+# ============================================================================
+
+async def transform_image(
+    image_path: str,
+    prompt: str,
+    output_path: str
+) -> str:
+    """
+    Transform an image using OpenAI's DALL-E image editing API.
+    
+    Args:
+        image_path: Path to the source image file
+        prompt: Transformation prompt describing how to modify the image
+        output_path: Where to save the transformed image
+        
+    Returns:
+        Path to the transformed image
+    """
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY not set in environment")
+    
+    # Read and encode the source image
+    image_data = encode_image_to_base64(image_path)
+    mime_type = get_image_mime_type(image_path)
+    
+    # For DALL-E image editing, we need to use the images/edits endpoint
+    # But since we want full transformation, we'll use GPT-4o vision to 
+    # understand the image and then generate a new one via DALL-E
+    
+    # First, analyze the image to get a description
+    analysis_prompt = """Describe this image in detail for recreation. Include:
+- Main subject(s) and their positioning
+- Color palette and lighting
+- Style and mood
+- Background elements
+- Any text visible in the image
+
+Be specific but concise. This description will be used to recreate the image with modifications."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # Step 1: Analyze the original image
+        analysis_response = await client.post(
+            OPENAI_API_URL,
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-5.2",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": analysis_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_data}",
+                                    "detail": "high"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_completion_tokens": 500,
+            }
+        )
+        
+        if analysis_response.status_code != 200:
+            raise Exception(f"Image analysis failed: {analysis_response.status_code} - {analysis_response.text}")
+        
+        analysis_result = analysis_response.json()
+        image_description = analysis_result["choices"][0]["message"]["content"]
+        
+        # Step 2: Generate transformed image with DALL-E
+        # Combine the image description with the transformation prompt
+        generation_prompt = f"""Based on this original image:
+{image_description}
+
+Apply these transformations:
+{prompt}
+
+Create a high-quality 1:1 square image that faithfully represents the original subject with the requested style modifications applied."""
+
+        generation_response = await client.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-image-1.5",
+                "prompt": generation_prompt,
+                "n": 1,
+                "size": "1024x1024",
+                "quality": "hd",
+            }
+        )
+        
+        if generation_response.status_code != 200:
+            raise Exception(f"Image generation failed: {generation_response.status_code} - {generation_response.text}")
+        
+        generation_result = generation_response.json()
+        
+        # Handle both b64_json and url response formats
+        if "b64_json" in generation_result["data"][0]:
+            transformed_data = generation_result["data"][0]["b64_json"]
+            with open(output_path, "wb") as f:
+                f.write(base64.b64decode(transformed_data))
+        else:
+            # If URL is returned, download the image
+            image_url = generation_result["data"][0]["url"]
+            image_response = await client.get(image_url)
+            with open(output_path, "wb") as f:
+                f.write(image_response.content)
+        
+        return output_path
+

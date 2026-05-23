@@ -48,6 +48,7 @@ class RenderSettings:
     quality: str = "medium"
     duration: float = 30.0
     preview: bool = False
+    resolution_scale: float = 1.0  # Multiplier for output resolution
 
 
 @dataclass
@@ -188,7 +189,14 @@ def render_video(
         width, height = PREVIEW_DIMENSIONS[render_settings.aspect_ratio]
         resampling = Image.Resampling.BILINEAR
     else:
-        width, height = ASPECT_DIMENSIONS[render_settings.aspect_ratio]
+        base_width, base_height = ASPECT_DIMENSIONS[render_settings.aspect_ratio]
+        # Apply resolution scale for export (default 1.0 = 1080p base)
+        scale = render_settings.resolution_scale
+        width = int(base_width * scale)
+        height = int(base_height * scale)
+        # Ensure dimensions are even (required for video encoding)
+        width = width + (width % 2)
+        height = height + (height % 2)
         resampling = Image.Resampling.LANCZOS
     
     fps = render_settings.fps
@@ -706,84 +714,70 @@ def apply_neon_outline(
     glow_radius: float,
     width: int, height: int
 ) -> Image.Image:
-    """Draw a neon outline tracing the actual edges of the subject."""
+    """Draw a neon outline around the subject using the bounding box with smooth contour."""
     if intensity < 0.01:
         return image
     
-    # Convert to numpy for edge detection
-    img_array = np.array(image.convert("RGB"))
+    # Get bounds
+    x = int(bounds.get("x", 0.25) * width)
+    y = int(bounds.get("y", 0.25) * height)
+    w = int(bounds.get("w", 0.5) * width)
+    h = int(bounds.get("h", 0.5) * height)
     
-    # Convert to grayscale for edge detection
-    gray = np.mean(img_array, axis=2).astype(np.uint8)
+    # Create overlay for the outline
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
     
-    # Apply Sobel edge detection
-    # Sobel kernels for x and y gradients
-    sobel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
-    sobel_y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
+    alpha = int(intensity * 255)
+    outline_color = (*color, alpha)
     
-    # Pad image for convolution
-    padded = np.pad(gray.astype(np.float32), 1, mode='edge')
+    # Draw a rounded rectangle that follows the subject bounds more naturally
+    # This looks better than an ellipse while still being clean
+    corner_radius = min(w, h) // 4
     
-    # Manual convolution for edge detection
-    gx = np.zeros_like(gray, dtype=np.float32)
-    gy = np.zeros_like(gray, dtype=np.float32)
+    # Draw the rounded rectangle outline
+    lw = max(2, int(line_width))
     
-    for i in range(3):
-        for j in range(3):
-            gx += sobel_x[i, j] * padded[i:i+gray.shape[0], j:j+gray.shape[1]]
-            gy += sobel_y[i, j] * padded[i:i+gray.shape[0], j:j+gray.shape[1]]
+    # PIL doesn't have rounded_rectangle with just outline, so draw it manually
+    # Top edge
+    draw.line([(x + corner_radius, y), (x + w - corner_radius, y)], fill=outline_color, width=lw)
+    # Bottom edge  
+    draw.line([(x + corner_radius, y + h), (x + w - corner_radius, y + h)], fill=outline_color, width=lw)
+    # Left edge
+    draw.line([(x, y + corner_radius), (x, y + h - corner_radius)], fill=outline_color, width=lw)
+    # Right edge
+    draw.line([(x + w, y + corner_radius), (x + w, y + h - corner_radius)], fill=outline_color, width=lw)
     
-    # Calculate edge magnitude
-    edges = np.sqrt(gx**2 + gy**2)
+    # Corner arcs
+    draw.arc([x, y, x + corner_radius * 2, y + corner_radius * 2], 180, 270, fill=outline_color, width=lw)
+    draw.arc([x + w - corner_radius * 2, y, x + w, y + corner_radius * 2], 270, 360, fill=outline_color, width=lw)
+    draw.arc([x, y + h - corner_radius * 2, x + corner_radius * 2, y + h], 90, 180, fill=outline_color, width=lw)
+    draw.arc([x + w - corner_radius * 2, y + h - corner_radius * 2, x + w, y + h], 0, 90, fill=outline_color, width=lw)
     
-    # Normalize and threshold edges
-    edges = (edges / edges.max() * 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)
-    
-    # Apply threshold to get clean edges
-    threshold = 30
-    edge_mask = (edges > threshold).astype(np.uint8) * 255
-    
-    # Create edge image from the mask
-    edge_img = Image.fromarray(edge_mask, mode='L')
-    
-    # Dilate the edges slightly to make them more visible
-    edge_img = edge_img.filter(ImageFilter.MaxFilter(size=int(line_width) * 2 + 1))
-    
-    # Create the neon outline overlay
-    outline_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    
-    # Colorize the edges with the neon color
-    edge_array = np.array(edge_img)
-    outline_array = np.zeros((height, width, 4), dtype=np.uint8)
-    
-    # Set color where edges exist
-    edge_mask_bool = edge_array > 128
-    outline_array[edge_mask_bool, 0] = color[0]
-    outline_array[edge_mask_bool, 1] = color[1]
-    outline_array[edge_mask_bool, 2] = color[2]
-    outline_array[edge_mask_bool, 3] = int(intensity * 255)
-    
-    outline_overlay = Image.fromarray(outline_array, mode='RGBA')
-    
-    # Create glow effect by blurring the outline
+    # Create glow by blurring a filled version
     glow_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    glow_array = np.zeros((height, width, 4), dtype=np.uint8)
+    glow_draw = ImageDraw.Draw(glow_overlay)
     
-    # More intense color for glow base
-    glow_array[edge_mask_bool, 0] = color[0]
-    glow_array[edge_mask_bool, 1] = color[1]
-    glow_array[edge_mask_bool, 2] = color[2]
-    glow_array[edge_mask_bool, 3] = int(intensity * 180)
+    glow_alpha = int(intensity * 120)
+    glow_color = (*color, glow_alpha)
     
-    glow_overlay = Image.fromarray(glow_array, mode='RGBA')
+    # Draw slightly thicker lines for glow base
+    glow_lw = lw + int(glow_radius / 2)
+    glow_draw.line([(x + corner_radius, y), (x + w - corner_radius, y)], fill=glow_color, width=glow_lw)
+    glow_draw.line([(x + corner_radius, y + h), (x + w - corner_radius, y + h)], fill=glow_color, width=glow_lw)
+    glow_draw.line([(x, y + corner_radius), (x, y + h - corner_radius)], fill=glow_color, width=glow_lw)
+    glow_draw.line([(x + w, y + corner_radius), (x + w, y + h - corner_radius)], fill=glow_color, width=glow_lw)
+    glow_draw.arc([x, y, x + corner_radius * 2, y + corner_radius * 2], 180, 270, fill=glow_color, width=glow_lw)
+    glow_draw.arc([x + w - corner_radius * 2, y, x + w, y + corner_radius * 2], 270, 360, fill=glow_color, width=glow_lw)
+    glow_draw.arc([x, y + h - corner_radius * 2, x + corner_radius * 2, y + h], 90, 180, fill=glow_color, width=glow_lw)
+    glow_draw.arc([x + w - corner_radius * 2, y + h - corner_radius * 2, x + w, y + h], 0, 90, fill=glow_color, width=glow_lw)
     
-    # Apply multiple blur passes for soft glow
+    # Blur for glow effect
     glow_overlay = glow_overlay.filter(ImageFilter.GaussianBlur(radius=glow_radius))
-    glow_overlay = glow_overlay.filter(ImageFilter.GaussianBlur(radius=glow_radius / 2))
     
-    # Composite: glow first (underneath), then sharp outline on top
+    # Composite: glow underneath, sharp outline on top
     result = Image.alpha_composite(image, glow_overlay)
-    return Image.alpha_composite(result, outline_overlay)
+    return Image.alpha_composite(result, overlay)
 
 
 def apply_echo_trail(

@@ -62,9 +62,9 @@ if DEMOS_DIR.exists() and any(DEMOS_DIR.iterdir()):
 sessions: Dict[str, SessionData] = {}
 session_lock = threading.Lock()
 
-# Session expiration settings
-SESSION_EXPIRY_SECONDS = 3600  # 1 hour
-SESSION_CLEANUP_INTERVAL = 300  # Check every 5 minutes
+# Session expiration settings - extended to 24 hours so sessions don't expire mid-work
+SESSION_EXPIRY_SECONDS = 3600 * 24  # 24 hours
+SESSION_CLEANUP_INTERVAL = 600  # Check every 10 minutes
 
 
 def cleanup_expired_sessions():
@@ -95,19 +95,6 @@ def cleanup_expired_sessions():
         print(f"Cleaned up {len(expired_sessions)} expired sessions")
 
 
-def cleanup_orphaned_files():
-    """Remove all session folders on startup (outputs/ and uploads/)."""
-    cleaned_count = 0
-    for folder in [UPLOAD_DIR, OUTPUT_DIR]:
-        if folder.exists():
-            for item in folder.iterdir():
-                if item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-                    cleaned_count += 1
-    if cleaned_count > 0:
-        print(f"Cleaned up {cleaned_count} orphaned session folders")
-
-
 async def session_cleanup_task():
     """Background task that periodically cleans up expired sessions."""
     while True:
@@ -117,8 +104,9 @@ async def session_cleanup_task():
 
 @app.on_event("startup")
 async def startup_event():
-    """Clean up orphaned files and start background cleanup task on app startup."""
-    cleanup_orphaned_files()
+    """Start background cleanup task on app startup."""
+    # Note: We no longer delete files on startup - this preserves uploads if server restarts
+    # Old sessions will be cleaned up when they expire (after 24 hours of inactivity)
     asyncio.create_task(session_cleanup_task())
 
 
@@ -141,6 +129,9 @@ class SessionData(BaseModel):
     # New: Effect toggles (replaces old sliders)
     effect_toggles: Optional[Dict[str, Any]] = None
     
+    # Resolution scale (1.0 = 1080p, 0.67 = 720p, etc.)
+    resolution_scale: float = 1.0
+    
     # Legacy support (to be deprecated)
     motion_intensity: int = 50
     beat_reactivity: int = 50
@@ -157,6 +148,12 @@ class SessionData(BaseModel):
     
     # New: Custom particle sprite path
     particle_sprite_path: Optional[str] = None
+    
+    # Image transformation
+    original_image_path: Optional[str] = None  # Original before transformation
+    transformed_image_path: Optional[str] = None  # After transformation
+    transform_status: str = "idle"  # idle, transforming, complete, error
+    transform_preset: Optional[str] = None  # Which preset was used
 
 
 class EffectToggleModel(BaseModel):
@@ -189,6 +186,9 @@ class GenerateRequest(BaseModel):
     # New: Effect toggles (preferred)
     effect_toggles: Optional[Dict[str, Any]] = None
     
+    # Resolution scale (1.0 = 1080p base, 0.67 = 720p, 1.33 = 1440p, 2.0 = 4K)
+    resolution_scale: Optional[float] = None
+    
     # Legacy support
     motion_intensity: Optional[int] = None
     beat_reactivity: Optional[int] = None
@@ -198,10 +198,16 @@ class GenerateRequest(BaseModel):
 class ExportRequest(BaseModel):
     session_id: str
     quality: str = "high"
+    resolution_scale: Optional[float] = None
 
 
 class AutoSuggestRequest(BaseModel):
     session_id: str
+
+
+class TransformImageRequest(BaseModel):
+    preset_key: str  # Key of the preset to use (e.g., "huntingszn_teal")
+    custom_prompt: Optional[str] = None  # Optional custom prompt (for "custom" preset)
 
 
 # ============================================================================
@@ -631,6 +637,208 @@ async def update_effect_toggles(session_id: str, toggles: Dict[str, Any]):
 
 
 # ============================================================================
+# Image Transformation Endpoints
+# ============================================================================
+
+@app.get("/transform/presets")
+async def get_transform_presets():
+    """Get all available transformation presets."""
+    from transform_presets import get_all_presets
+    return {"presets": get_all_presets()}
+
+
+def transform_image_task(session_id: str, preset_key: str, custom_prompt: Optional[str] = None):
+    """Background task to transform an image."""
+    try:
+        # Get session data with lock
+        with session_lock:
+            if session_id not in sessions:
+                print(f"Session {session_id} not found, aborting transform")
+                return
+            session = sessions[session_id]
+            session.transform_status = "transforming"
+            image_path = session.image_path
+        
+        if not image_path:
+            with session_lock:
+                if session_id in sessions:
+                    sessions[session_id].transform_status = "error"
+            return
+        
+        # Get the preset prompt
+        from transform_presets import get_preset, PRESETS
+        
+        if preset_key == "custom" and custom_prompt:
+            prompt = custom_prompt
+        elif preset_key in PRESETS:
+            preset = get_preset(preset_key)
+            prompt = preset.prompt
+        else:
+            with session_lock:
+                if session_id in sessions:
+                    sessions[session_id].transform_status = "error"
+            return
+        
+        # Run the transformation synchronously (we're in a background thread)
+        import asyncio
+        from image_analysis import transform_image
+        
+        session_dir = UPLOAD_DIR / session_id
+        output_path = str(session_dir / "transformed_cover.png")
+        
+        # Run async function in new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(transform_image(image_path, prompt, output_path))
+        finally:
+            loop.close()
+        
+        # Update session with results
+        with session_lock:
+            if session_id in sessions:
+                sessions[session_id].original_image_path = image_path
+                sessions[session_id].transformed_image_path = output_path
+                sessions[session_id].transform_status = "complete"
+                sessions[session_id].transform_preset = preset_key
+                # Also set as the current image for video generation
+                sessions[session_id].image_path = output_path
+        
+    except Exception as e:
+        with session_lock:
+            if session_id in sessions:
+                sessions[session_id].transform_status = "error"
+        print(f"Transform error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@app.post("/transform-image/{session_id}")
+async def transform_image_endpoint(
+    session_id: str, 
+    request: TransformImageRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Transform an uploaded image using a preset style.
+    """
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = sessions[session_id]
+    if not session.image_path:
+        raise HTTPException(status_code=400, detail="No image uploaded")
+    
+    # Check for API key
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=500, 
+            detail="OPENAI_API_KEY not configured. Set it in backend/.env file."
+        )
+    
+    # Validate preset
+    from transform_presets import PRESETS
+    if request.preset_key != "custom" and request.preset_key not in PRESETS:
+        raise HTTPException(status_code=400, detail=f"Unknown preset: {request.preset_key}")
+    
+    if request.preset_key == "custom" and not request.custom_prompt:
+        raise HTTPException(status_code=400, detail="Custom preset requires a prompt")
+    
+    # Start background transformation
+    background_tasks.add_task(
+        transform_image_task, 
+        session_id, 
+        request.preset_key,
+        request.custom_prompt
+    )
+    
+    return {
+        "message": "Transformation started",
+        "session_id": session_id,
+        "preset": request.preset_key
+    }
+
+
+@app.get("/transform/status/{session_id}")
+async def get_transform_status(session_id: str):
+    """Get the status of an image transformation."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = sessions[session_id]
+    
+    return {
+        "status": session.transform_status,
+        "preset": session.transform_preset,
+        "original_image": session.original_image_path,
+        "transformed_image": session.transformed_image_path,
+    }
+
+
+@app.get("/transform/result/{session_id}")
+async def get_transform_result(session_id: str):
+    """Get the transformed image."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = sessions[session_id]
+    
+    if session.transform_status != "complete":
+        raise HTTPException(status_code=400, detail="Transformation not complete")
+    
+    if not session.transformed_image_path:
+        raise HTTPException(status_code=404, detail="Transformed image not found")
+    
+    transformed_path = Path(session.transformed_image_path)
+    if not transformed_path.exists():
+        raise HTTPException(status_code=404, detail="Transformed image file not found")
+    
+    return FileResponse(
+        transformed_path,
+        media_type="image/png",
+        filename="transformed_cover.png"
+    )
+
+
+@app.get("/image/{session_id}/{image_type}")
+async def get_session_image(session_id: str, image_type: str):
+    """Get an image from the session (original or transformed)."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = sessions[session_id]
+    
+    if image_type == "original":
+        image_path = session.original_image_path or session.image_path
+    elif image_type == "transformed":
+        image_path = session.transformed_image_path
+    elif image_type == "current":
+        image_path = session.image_path
+    else:
+        raise HTTPException(status_code=400, detail="Invalid image type. Use: original, transformed, current")
+    
+    if not image_path:
+        raise HTTPException(status_code=404, detail=f"No {image_type} image available")
+    
+    path = Path(image_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Image file not found")
+    
+    # Determine media type
+    ext = path.suffix.lower()
+    media_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
+    media_type = media_types.get(ext, "image/jpeg")
+    
+    return FileResponse(path, media_type=media_type)
+
+
+# ============================================================================
 # Generation Endpoints
 # ============================================================================
 
@@ -814,6 +1022,9 @@ async def generate_video(request: GenerateRequest, background_tasks: BackgroundT
     if request.effect_toggles:
         session.effect_toggles = request.effect_toggles
     
+    if request.resolution_scale is not None:
+        session.resolution_scale = request.resolution_scale
+    
     # Legacy support
     if request.motion_intensity is not None:
         session.motion_intensity = request.motion_intensity
@@ -862,7 +1073,7 @@ async def get_preview(session_id: str):
 # Export Endpoints
 # ============================================================================
 
-def export_video_task(session_id: str, quality: str):
+def export_video_task(session_id: str, quality: str, resolution_scale: Optional[float] = None):
     """Background task to export video at full quality."""
     try:
         # Get session data with lock
@@ -881,6 +1092,7 @@ def export_video_task(session_id: str, quality: str):
             session_effect_toggles = session.effect_toggles
             session_image_analysis = session.image_analysis
             session_aspect_ratio = session.aspect_ratio
+            session_resolution_scale = resolution_scale if resolution_scale is not None else session.resolution_scale
             motion_intensity = session.motion_intensity
             beat_reactivity = session.beat_reactivity
             energy_level = session.energy_level
@@ -926,7 +1138,8 @@ def export_video_task(session_id: str, quality: str):
             fps=30,
             quality=quality,
             duration=duration,
-            preview=False
+            preview=False,
+            resolution_scale=session_resolution_scale
         )
         
         def progress_callback(progress: float):
@@ -974,7 +1187,12 @@ async def export_video(request: ExportRequest, background_tasks: BackgroundTasks
     if not session.image_path or not session.audio_path:
         raise HTTPException(status_code=400, detail="Missing image or audio files.")
     
-    background_tasks.add_task(export_video_task, request.session_id, request.quality)
+    background_tasks.add_task(
+        export_video_task, 
+        request.session_id, 
+        request.quality,
+        request.resolution_scale
+    )
     
     return {
         "message": "Export started",

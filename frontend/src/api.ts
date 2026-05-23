@@ -154,6 +154,7 @@ export async function generateVideo(
       end_time: settings.end_time,
       aspect_ratio: settings.aspect_ratio,
       effect_toggles: settings.effect_toggles,
+      resolution_scale: settings.resolution_scale,
       // Legacy support
       motion_intensity: settings.motion_intensity,
       beat_reactivity: settings.beat_reactivity,
@@ -182,11 +183,17 @@ export async function getGenerationStatus(sessionId: string): Promise<{
 // Export Endpoints
 // ============================================================================
 
-export async function exportVideo(sessionId: string): Promise<{ download_url: string }> {
+export async function exportVideo(
+  sessionId: string, 
+  resolutionScale?: number
+): Promise<{ download_url: string }> {
   const res = await fetch(`${API_BASE}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ 
+      session_id: sessionId,
+      resolution_scale: resolutionScale,
+    }),
   });
   
   if (!res.ok) throw new Error('Failed to export');
@@ -254,4 +261,57 @@ export async function getDemoManifest(): Promise<DemoManifest> {
 
 export function getDemoVideoUrl(effectKey: string): string {
   return `${API_BASE}/demos/${effectKey}.mp4`;
+}
+
+// ============================================================================
+// Image Transformation Endpoints
+// ============================================================================
+
+export interface TransformPreset {
+  key: string;
+  name: string;
+  description: string;
+  thumbnail_color: string;
+}
+
+export async function getTransformPresets(): Promise<{ presets: TransformPreset[] }> {
+  const res = await fetch(`${API_BASE}/transform/presets`);
+  if (!res.ok) throw new Error('Failed to get transform presets');
+  return res.json();
+}
+
+export async function transformImage(
+  sessionId: string,
+  presetKey: string,
+  customPrompt?: string
+): Promise<{ message: string; session_id: string; preset: string }> {
+  const res = await fetch(`${API_BASE}/transform-image/${sessionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      preset_key: presetKey,
+      custom_prompt: customPrompt,
+    }),
+  });
+  
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || 'Failed to start transformation');
+  }
+  return res.json();
+}
+
+export async function getTransformStatus(sessionId: string): Promise<{
+  status: 'idle' | 'transforming' | 'complete' | 'error';
+  preset: string | null;
+  original_image: string | null;
+  transformed_image: string | null;
+}> {
+  const res = await fetch(`${API_BASE}/transform/status/${sessionId}`);
+  if (!res.ok) throw new Error('Failed to get transform status');
+  return res.json();
+}
+
+export function getSessionImageUrl(sessionId: string, imageType: 'original' | 'transformed' | 'current'): string {
+  return `${API_BASE}/image/${sessionId}/${imageType}`;
 }

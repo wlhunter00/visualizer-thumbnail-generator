@@ -6,7 +6,8 @@ import {
   ASPECT_RATIOS, 
   EffectToggles, 
   DEFAULT_EFFECT_TOGGLES,
-  ImageAnalysis 
+  ImageAnalysis,
+  RENDER_RESOLUTIONS
 } from './types';
 import { 
   createSession, 
@@ -26,24 +27,38 @@ import UploadStep from './components/UploadStep';
 import WaveformSelector from './components/WaveformSelector';
 import EffectControls from './components/EffectControls';
 import VideoPreview from './components/VideoPreview';
+import RenderSettings from './components/RenderSettings';
 import DemoPage from './DemoPage';
-import { Music, Image as ImageIcon, Sparkles, Download, Loader2, PlayCircle } from 'lucide-react';
+import TransformPage from './TransformPage';
+import { Music, Image as ImageIcon, Sparkles, Download, Loader2, PlayCircle, Settings2, Wand2 } from 'lucide-react';
 
 // Parse hash route
-function parseHash(): { page: 'main' | 'demo'; effectKey?: string } {
+function parseHash(): { page: 'main' | 'demo' | 'transform'; effectKey?: string; sessionId?: string } {
   const hash = window.location.hash;
   if (hash.startsWith('#/demo')) {
     const parts = hash.split('/');
     const effectKey = parts[2] || undefined;
     return { page: 'demo', effectKey };
   }
+  if (hash.startsWith('#/transform')) {
+    return { page: 'transform' };
+  }
+  // Check for session ID from transform flow: #/video/{sessionId}
+  if (hash.startsWith('#/video/')) {
+    const sessionId = hash.split('/')[2];
+    return { page: 'main', sessionId };
+  }
   return { page: 'main' };
 }
 
-function MainApp() {
+interface MainAppProps {
+  initialSessionId?: string;
+}
+
+function MainApp({ initialSessionId }: MainAppProps) {
   // Session state
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [currentStep, setCurrentStep] = useState<Step>(1);
+  const [sessionId, setSessionId] = useState<string | null>(initialSessionId || null);
+  const [currentStep, setCurrentStep] = useState<Step>(initialSessionId ? 2 : 1);
   
   // Upload state
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -62,6 +77,7 @@ function MainApp() {
   
   // Settings state - now using effect toggles
   const [effectToggles, setEffectToggles] = useState<EffectToggles>(DEFAULT_EFFECT_TOGGLES);
+  const [resolution, setResolution] = useState<string>('1080p');
   const [settings, setSettings] = useState<GenerateSettings>({
     start_time: 0,
     end_time: 30,
@@ -80,15 +96,30 @@ function MainApp() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   
-  // Initialize session
+  // Initialize session (skip if we have one from transform flow)
   useEffect(() => {
+    if (initialSessionId) {
+      // Session already set from transform flow, mark image as ready
+      setSessionId(initialSessionId);
+      // Fetch the transformed image to show preview
+      fetch(`/api/image/${initialSessionId}/current`)
+        .then(res => {
+          if (res.ok) {
+            setImagePreview(`/api/image/${initialSessionId}/current?t=${Date.now()}`);
+            setImageFile(new File([], 'transformed.png')); // Placeholder to enable flow
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+    
     createSession().then(({ session_id }) => {
       setSessionId(session_id);
     }).catch(err => {
       setError('Failed to connect to server. Make sure the backend is running.');
       console.error(err);
     });
-  }, []);
+  }, [initialSessionId]);
   
   // Handle image upload
   const handleImageUpload = useCallback(async (file: File) => {
@@ -169,6 +200,11 @@ function MainApp() {
     setSettings(s => ({ ...s, aspect_ratio: value }));
     setVideoReady(false);
   }, []);
+
+  // Handle resolution change
+  const handleResolutionChange = useCallback((value: string) => {
+    setResolution(value);
+  }, []);
   
   // Handle effect toggles change
   const handleEffectTogglesChange = useCallback((toggles: EffectToggles) => {
@@ -226,6 +262,35 @@ function MainApp() {
     }
   }, [currentStep, sessionId, imageFile, imageAnalysis, isAnalyzing]);
   
+  // Reset session state when files are missing on backend
+  const handleSessionReset = useCallback(async () => {
+    // Create a new session and reset all state
+    try {
+      const { session_id } = await createSession();
+      setSessionId(session_id);
+      setImageFile(null);
+      setImagePreview(null);
+      setAudioFile(null);
+      setAudioPreviewUrl(null);
+      setAudioDuration(0);
+      setWaveformData([]);
+      setImageAnalysis(null);
+      setEffectToggles(DEFAULT_EFFECT_TOGGLES);
+      setSettings({
+        start_time: 0,
+        end_time: 30,
+        aspect_ratio: '9:16',
+        effect_toggles: DEFAULT_EFFECT_TOGGLES,
+      });
+      setVideoReady(false);
+      setPlaybook(null);
+      setCurrentStep(1);
+      setError('Your session expired. Please re-upload your files.');
+    } catch (e) {
+      setError('Failed to create new session. Please refresh the page.');
+    }
+  }, []);
+
   // Generate video
   const handleGenerate = useCallback(async () => {
     if (!sessionId) return;
@@ -262,9 +327,19 @@ function MainApp() {
       pollStatus();
     } catch (err) {
       setIsGenerating(false);
-      setError(err instanceof Error ? err.message : 'Failed to generate video');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to generate video';
+      
+      // Check if this is a session/file missing error
+      if (errorMessage.includes('No image uploaded') || 
+          errorMessage.includes('No audio uploaded') ||
+          errorMessage.includes('Session not found')) {
+        // Session is stale, reset everything
+        handleSessionReset();
+      } else {
+        setError(errorMessage);
+      }
     }
-  }, [sessionId, settings, effectToggles]);
+  }, [sessionId, settings, effectToggles, handleSessionReset]);
   
   // Export video
   const handleExport = useCallback(async () => {
@@ -275,7 +350,11 @@ function MainApp() {
       setIsExporting(true);
       setExportProgress(0);
       
-      await exportVideo(sessionId);
+      // Get resolution scale from selected resolution
+      const selectedRes = RENDER_RESOLUTIONS.find(r => r.value === resolution);
+      const resolutionScale = selectedRes?.scale || 1.0;
+      
+      await exportVideo(sessionId, resolutionScale);
       
       // Poll for export completion
       const pollExportStatus = async () => {
@@ -302,9 +381,19 @@ function MainApp() {
       pollExportStatus();
     } catch (err) {
       setIsExporting(false);
-      setError(err instanceof Error ? err.message : 'Failed to export video');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to export video';
+      
+      // Check if this is a session/file missing error
+      if (errorMessage.includes('No image uploaded') || 
+          errorMessage.includes('No audio uploaded') ||
+          errorMessage.includes('Session not found') ||
+          errorMessage.includes('Missing image or audio')) {
+        handleSessionReset();
+      } else {
+        setError(errorMessage);
+      }
     }
-  }, [sessionId]);
+  }, [sessionId, resolution, handleSessionReset]);
   
   const canGenerate = imageFile && audioFile && settings.end_time > settings.start_time;
   const selectedDuration = settings.end_time - settings.start_time;
@@ -324,14 +413,23 @@ function MainApp() {
             </div>
           </div>
           
-          <a
-            href="#/demo"
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-surface-600 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors"
-          >
-            <PlayCircle className="w-4 h-4" />
-            <span className="hidden sm:inline">See Effects Demo</span>
-            <span className="sm:hidden">Demo</span>
-          </a>
+          <div className="flex items-center gap-2">
+            <a
+              href="#/transform"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-surface-600 hover:text-cyan-600 hover:bg-cyan-50 rounded-lg transition-colors"
+            >
+              <Wand2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Transform Image</span>
+            </a>
+            <a
+              href="#/demo"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-surface-600 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors"
+            >
+              <PlayCircle className="w-4 h-4" />
+              <span className="hidden sm:inline">Effects Demo</span>
+              <span className="sm:hidden">Demo</span>
+            </a>
+          </div>
         </div>
       </header>
       
@@ -524,15 +622,39 @@ function MainApp() {
             
             <div className="grid lg:grid-cols-3 gap-8">
               {/* Video Preview */}
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-2 space-y-4">
                 <VideoPreview
                   videoUrl={getPreviewUrl(sessionId)}
                   aspectRatio={settings.aspect_ratio}
                 />
                 
+                {/* Timeline Editor */}
+                <div className="bg-white rounded-2xl border border-surface-200 p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Music className="w-4 h-4 text-accent" />
+                      <span className="text-sm font-medium text-surface-700">Timeline</span>
+                    </div>
+                    <span className="text-sm text-surface-500">
+                      {(settings.end_time - settings.start_time).toFixed(1)}s selected
+                    </span>
+                  </div>
+                  <WaveformSelector
+                    waveformData={waveformData}
+                    duration={audioDuration}
+                    startTime={settings.start_time}
+                    endTime={settings.end_time}
+                    onRegionChange={handleRegionChange}
+                    audioUrl={audioPreviewUrl || undefined}
+                  />
+                  <p className="text-xs text-surface-400 mt-3">
+                    Drag the handles to adjust the start and end time of your video
+                  </p>
+                </div>
+                
                 {/* Playbook Summary */}
                 {playbook && (
-                  <div className="mt-4 bg-white rounded-2xl border border-surface-200 p-4">
+                  <div className="bg-white rounded-2xl border border-surface-200 p-4">
                     <h3 className="text-sm font-medium text-surface-700 mb-2">Generation Summary</h3>
                     <p className="text-sm text-surface-600 mb-3">{playbook.summary}</p>
                     
@@ -553,31 +675,99 @@ function MainApp() {
               </div>
               
               {/* Controls & Actions */}
-              <div className="space-y-6">
-                <EffectControls
-                  effectToggles={effectToggles}
-                  onChange={handleEffectTogglesChange}
-                  onAutoSuggest={handleAutoSuggest}
-                  isAutoSuggesting={isAutoSuggesting}
-                  imageAnalysis={imageAnalysis}
+              <div className="space-y-4">
+                {/* Render Settings - Resolution & Aspect Ratio */}
+                <RenderSettings
+                  aspectRatio={settings.aspect_ratio}
+                  resolution={resolution}
+                  onAspectRatioChange={handleAspectRatioChange}
+                  onResolutionChange={handleResolutionChange}
+                  compact
                 />
                 
+                {/* Effect Controls (Collapsible) */}
+                <details className="group">
+                  <summary className="bg-white rounded-2xl border border-surface-200 p-4 cursor-pointer list-none flex items-center justify-between hover:bg-surface-50 transition-colors">
+                    <div className="flex items-center gap-2">
+                      <Settings2 className="w-4 h-4 text-accent" />
+                      <span className="text-sm font-medium text-surface-700">Effect Settings</span>
+                    </div>
+                    <svg 
+                      className="w-4 h-4 text-surface-400 transition-transform group-open:rotate-180" 
+                      fill="none" 
+                      viewBox="0 0 24 24" 
+                      stroke="currentColor"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </summary>
+                  <div className="mt-2">
+                    <EffectControls
+                      effectToggles={effectToggles}
+                      onChange={handleEffectTogglesChange}
+                      onAutoSuggest={handleAutoSuggest}
+                      isAutoSuggesting={isAutoSuggesting}
+                      imageAnalysis={imageAnalysis}
+                    />
+                  </div>
+                </details>
+                
+                {/* Action Buttons */}
                 <div className="space-y-3">
-                  <button
-                    onClick={handleExport}
-                    disabled={isExporting}
-                    className="w-full py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white font-medium rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
-                  >
-                    {isExporting ? 'Exporting...' : 'Export High Quality'}
-                  </button>
-                  
+                  {/* Re-render button - Primary when settings changed */}
                   <button
                     onClick={handleGenerate}
                     disabled={isGenerating}
-                    className="w-full py-3 bg-white border border-surface-200 text-surface-700 font-medium rounded-xl hover:bg-surface-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full py-3 bg-accent text-white font-medium rounded-xl hover:bg-accent-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
-                    {isGenerating ? `Re-rendering... ${Math.round(progress)}%` : 'Re-render Video'}
+                    {isGenerating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Re-rendering... {Math.round(progress)}%
+                      </>
+                    ) : (
+                      'Re-render with Changes'
+                    )}
                   </button>
+                  
+                  {isGenerating && (
+                    <div className="h-2 bg-surface-200 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full progress-bar rounded-full"
+                        style={{ width: `${progress}%` }}
+                      />
+                    </div>
+                  )}
+                  
+                  <div className="pt-2 border-t border-surface-100">
+                    <p className="text-xs text-surface-500 mb-3 text-center">
+                      Happy with your preview? Export at full quality:
+                    </p>
+                    
+                    <button
+                      onClick={handleExport}
+                      disabled={isExporting || isGenerating}
+                      className="w-full py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white font-medium rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
+                    >
+                      {isExporting ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Exporting at {resolution}...
+                        </span>
+                      ) : (
+                        `Export at ${resolution}`
+                      )}
+                    </button>
+                  </div>
+                  
+                  <a
+                    href={getPreviewUrl(sessionId)}
+                    download="beat-reactive-preview.mp4"
+                    className="w-full py-3 bg-white border border-surface-200 text-surface-700 font-medium rounded-xl hover:bg-surface-50 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download Preview
+                  </a>
                 </div>
               </div>
             </div>
@@ -642,6 +832,11 @@ export default function App() {
     setRoute({ page: 'main' });
   }, []);
 
+  const navigateToVideo = useCallback((sessionId: string) => {
+    window.location.hash = `/video/${sessionId}`;
+    setRoute({ page: 'main', sessionId });
+  }, []);
+
   if (route.page === 'demo') {
     return (
       <DemoPage 
@@ -651,5 +846,14 @@ export default function App() {
     );
   }
 
-  return <MainApp />;
+  if (route.page === 'transform') {
+    return (
+      <TransformPage
+        onNavigateToVideo={navigateToVideo}
+        onNavigateHome={navigateHome}
+      />
+    );
+  }
+
+  return <MainApp initialSessionId={route.sessionId} />;
 }
