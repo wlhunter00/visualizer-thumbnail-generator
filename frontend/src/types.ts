@@ -183,6 +183,22 @@ export interface SessionData {
   playbook: Playbook | null;
 }
 
+export interface ExportFile {
+  aspect_ratio: string;
+  filename: string;
+}
+
+export interface GenerationStatus {
+  status: 'idle' | 'rendering' | 'complete' | 'error' | 'exporting' | 'export_complete';
+  progress: number;
+  output_path: string | null;
+  playbook: Playbook | null;
+  export_current_ratio?: string;
+  export_total?: number;
+  export_completed?: number;
+  export_files?: ExportFile[];
+}
+
 export interface Playbook {
   summary: string;
   active_effects: string[];

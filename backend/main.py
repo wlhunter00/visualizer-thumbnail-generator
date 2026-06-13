@@ -11,7 +11,7 @@ import time
 import asyncio
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
@@ -159,6 +159,11 @@ class SessionData(BaseModel):
     audio_analysis_cache: Optional[Dict[str, Any]] = None
     audio_analysis_cache_key: Optional[str] = None
 
+    # Multi-aspect export tracking
+    export_aspect_ratios: List[str] = []
+    export_completed_ratios: List[str] = []
+    export_current_ratio: Optional[str] = None
+
 
 class EffectToggleModel(BaseModel):
     enabled: bool = False
@@ -213,7 +218,50 @@ class ExportRequest(BaseModel):
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     aspect_ratio: Optional[str] = None
+    aspect_ratios: Optional[List[str]] = None
     effect_toggles: Optional[Dict[str, Any]] = None
+
+
+VALID_ASPECT_RATIOS = {"9:16", "1:1", "16:9", "4:5"}
+
+ASPECT_MAP = {
+    "9:16": AspectRatio.VERTICAL,
+    "1:1": AspectRatio.SQUARE,
+    "16:9": AspectRatio.HORIZONTAL,
+    "4:5": AspectRatio.PORTRAIT,
+}
+
+
+def aspect_ratio_slug(ratio: str) -> str:
+    return ratio.replace(":", "-")
+
+
+def export_download_filename(ratio: str) -> str:
+    return f"beat-reactive-{aspect_ratio_slug(ratio)}.mp4"
+
+
+def resolve_export_aspect_ratios(request: ExportRequest, session: SessionData) -> List[str]:
+    if request.aspect_ratios:
+        ratios = request.aspect_ratios
+    elif request.aspect_ratio is not None:
+        ratios = [request.aspect_ratio]
+    else:
+        ratios = [session.aspect_ratio]
+
+    if not ratios:
+        raise HTTPException(status_code=400, detail="At least one aspect ratio is required.")
+
+    invalid = [r for r in ratios if r not in VALID_ASPECT_RATIOS]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid aspect ratios: {invalid}")
+
+    seen: set[str] = set()
+    unique: List[str] = []
+    for ratio in ratios:
+        if ratio not in seen:
+            seen.add(ratio)
+            unique.append(ratio)
+    return unique
 
 
 class AutoSuggestRequest(BaseModel):
@@ -1130,13 +1178,30 @@ async def get_generation_status(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     
     session = sessions[session_id]
-    
-    return {
+
+    export_files = None
+    if session.render_status == "export_complete" and session.export_completed_ratios:
+        export_files = [
+            {"aspect_ratio": ratio, "filename": export_download_filename(ratio)}
+            for ratio in session.export_completed_ratios
+        ]
+
+    response: Dict[str, Any] = {
         "status": session.render_status,
         "progress": session.render_progress,
         "output_path": session.output_path,
-        "playbook": session.playbook
+        "playbook": session.playbook,
     }
+
+    if session.render_status == "exporting" and session.export_aspect_ratios:
+        response["export_current_ratio"] = session.export_current_ratio
+        response["export_total"] = len(session.export_aspect_ratios)
+        response["export_completed"] = len(session.export_completed_ratios)
+
+    if export_files is not None:
+        response["export_files"] = export_files
+
+    return response
 
 
 @app.get("/preview/{session_id}")
@@ -1157,8 +1222,13 @@ async def get_preview(session_id: str):
 # Export Endpoints
 # ============================================================================
 
-def export_video_task(session_id: str, quality: str, resolution_scale: Optional[float] = None):
-    """Background task to export video at full quality."""
+def export_video_task(
+    session_id: str,
+    quality: str,
+    aspect_ratios: List[str],
+    resolution_scale: Optional[float] = None,
+):
+    """Background task to export video at full quality for one or more aspect ratios."""
     try:
         # Get session data with lock
         with session_lock:
@@ -1168,6 +1238,9 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
             session = sessions[session_id]
             session.render_status = "exporting"
             session.render_progress = 0.0
+            session.export_aspect_ratios = aspect_ratios
+            session.export_completed_ratios = []
+            session.export_current_ratio = None
             # Copy needed data while holding lock
             audio_path = session.audio_path
             image_path = session.image_path
@@ -1175,14 +1248,13 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
             end_time = session.end_time
             session_effect_toggles = session.effect_toggles
             session_image_analysis = session.image_analysis
-            session_aspect_ratio = session.aspect_ratio
             session_resolution_scale = resolution_scale if resolution_scale is not None else session.resolution_scale
             motion_intensity = session.motion_intensity
             beat_reactivity = session.beat_reactivity
             energy_level = session.energy_level
             particle_sprite_path = session.particle_sprite_path
         
-        # Analyze audio (outside lock - this is slow)
+        # Analyze audio once (outside lock - this is slow)
         duration = (end_time or 30.0) - start
         features = analyze_audio(audio_path, start_time=start, duration=duration)
         
@@ -1203,50 +1275,55 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
         
         effect_params = calculate_effect_parameters(features, toggles, image_context)
         
-        # Parse aspect ratio
-        aspect_map = {
-            "9:16": AspectRatio.VERTICAL,
-            "1:1": AspectRatio.SQUARE,
-            "16:9": AspectRatio.HORIZONTAL,
-            "4:5": AspectRatio.PORTRAIT
-        }
-        aspect = aspect_map.get(session_aspect_ratio, AspectRatio.VERTICAL)
-        
-        # Render at full quality
         output_dir = OUTPUT_DIR / session_id
         output_dir.mkdir(exist_ok=True)
-        export_path = output_dir / "export.mp4"
-        
-        render_settings = RenderSettings(
-            aspect_ratio=aspect,
-            fps=30,
-            quality=quality,
-            duration=duration,
-            preview=False,
-            resolution_scale=session_resolution_scale
-        )
-        
-        def progress_callback(progress: float):
+        total_ratios = len(aspect_ratios)
+
+        for index, ratio_str in enumerate(aspect_ratios):
+            aspect = ASPECT_MAP.get(ratio_str, AspectRatio.VERTICAL)
+            slug = aspect_ratio_slug(ratio_str)
+            export_path = output_dir / f"export_{slug}.mp4"
+
             with session_lock:
                 if session_id in sessions:
-                    sessions[session_id].render_progress = progress
-        
-        render_video(
-            image_path=image_path,
-            audio_path=audio_path,
-            output_path=str(export_path),
-            effect_params=effect_params,
-            render_settings=render_settings,
-            audio_start=start,
-            progress_callback=progress_callback,
-            custom_particle_sprite=particle_sprite_path
-        )
+                    sessions[session_id].export_current_ratio = ratio_str
+
+            render_settings = RenderSettings(
+                aspect_ratio=aspect,
+                fps=30,
+                quality=quality,
+                duration=duration,
+                preview=False,
+                resolution_scale=session_resolution_scale,
+            )
+
+            def progress_callback(progress: float, ratio_index: int = index):
+                batch_progress = (ratio_index + progress) / total_ratios
+                with session_lock:
+                    if session_id in sessions:
+                        sessions[session_id].render_progress = batch_progress
+
+            render_video(
+                image_path=image_path,
+                audio_path=audio_path,
+                output_path=str(export_path),
+                effect_params=effect_params,
+                render_settings=render_settings,
+                audio_start=start,
+                progress_callback=progress_callback,
+                custom_particle_sprite=particle_sprite_path,
+            )
+
+            with session_lock:
+                if session_id in sessions:
+                    sessions[session_id].export_completed_ratios.append(ratio_str)
         
         # Update session with results (with lock)
         with session_lock:
             if session_id in sessions:
                 sessions[session_id].render_status = "export_complete"
                 sessions[session_id].render_progress = 1.0
+                sessions[session_id].export_current_ratio = None
 
         # Record successful export for Auto-Suggest few-shot learning
         try:
@@ -1262,14 +1339,15 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
                 "beat_strength_variance": features.beat_strength_variance,
                 "average_energy": features.average_energy,
             }
-            entry = build_history_entry(
-                effect_toggles=toggles_to_dict(toggles),
-                audio_metrics=audio_metrics,
-                image_analysis_dict=session_image_analysis,
-                aspect_ratio=session_aspect_ratio,
-                clip_duration_sec=duration,
-            )
-            append_export_history(entry)
+            for ratio_str in aspect_ratios:
+                entry = build_history_entry(
+                    effect_toggles=toggles_to_dict(toggles),
+                    audio_metrics=audio_metrics,
+                    image_analysis_dict=session_image_analysis,
+                    aspect_ratio=ratio_str,
+                    clip_duration_sec=duration,
+                )
+                append_export_history(entry)
         except Exception as history_err:
             print(f"Export history append failed (non-fatal): {history_err}")
         
@@ -1277,6 +1355,7 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
         with session_lock:
             if session_id in sessions:
                 sessions[session_id].render_status = "error"
+                sessions[session_id].export_current_ratio = None
         print(f"Export error: {e}")
         import traceback
         traceback.print_exc()
@@ -1310,6 +1389,10 @@ async def export_video(request: ExportRequest, background_tasks: BackgroundTasks
             raise HTTPException(status_code=400, detail="Missing image or audio files.")
 
         _apply_export_settings(session, request)
+        aspect_ratios = resolve_export_aspect_ratios(request, session)
+        session.export_aspect_ratios = aspect_ratios
+        session.export_completed_ratios = []
+        session.export_current_ratio = None
         session.render_status = "exporting"
         session.render_progress = 0.0
 
@@ -1317,30 +1400,65 @@ async def export_video(request: ExportRequest, background_tasks: BackgroundTasks
         export_video_task,
         request.session_id,
         request.quality,
+        aspect_ratios,
         request.resolution_scale,
     )
 
     return {
         "message": "Export started",
         "session_id": request.session_id,
+        "aspect_ratios": aspect_ratios,
     }
 
 
 @app.get("/download/{session_id}")
-async def download_video(session_id: str):
-    """Download the exported video."""
+async def download_video(session_id: str, aspect_ratio: Optional[str] = None):
+    """Download an exported video, optionally for a specific aspect ratio."""
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    export_path = OUTPUT_DIR / session_id / "export.mp4"
-    
-    if not export_path.exists():
+
+    output_dir = OUTPUT_DIR / session_id
+
+    if aspect_ratio is not None:
+        if aspect_ratio not in VALID_ASPECT_RATIOS:
+            raise HTTPException(status_code=400, detail=f"Invalid aspect ratio: {aspect_ratio}")
+        export_path = output_dir / f"export_{aspect_ratio_slug(aspect_ratio)}.mp4"
+        if not export_path.exists():
+            raise HTTPException(status_code=404, detail="Export not found for this aspect ratio.")
+        return FileResponse(
+            export_path,
+            media_type="video/mp4",
+            filename=export_download_filename(aspect_ratio),
+        )
+
+    session = sessions[session_id]
+    available: List[tuple[str, Path]] = []
+    for ratio in session.export_completed_ratios:
+        export_path = output_dir / f"export_{aspect_ratio_slug(ratio)}.mp4"
+        if export_path.exists():
+            available.append((ratio, export_path))
+
+    if not available:
+        legacy_path = output_dir / "export.mp4"
+        if legacy_path.exists():
+            return FileResponse(
+                legacy_path,
+                media_type="video/mp4",
+                filename="beat-reactive-video.mp4",
+            )
         raise HTTPException(status_code=404, detail="Export not found. Export first.")
-    
-    return FileResponse(
-        export_path,
-        media_type="video/mp4",
-        filename="beat-reactive-video.mp4"
+
+    if len(available) == 1:
+        ratio, export_path = available[0]
+        return FileResponse(
+            export_path,
+            media_type="video/mp4",
+            filename=export_download_filename(ratio),
+        )
+
+    raise HTTPException(
+        status_code=400,
+        detail="Multiple exports available. Specify aspect_ratio query parameter.",
     )
 
 

@@ -7,6 +7,7 @@ interface RenderSettingsProps {
   onAspectRatioChange: (value: string) => void;
   onResolutionChange: (value: string) => void;
   compact?: boolean;
+  showAspectRatio?: boolean;
 }
 
 export default function RenderSettings({
@@ -15,6 +16,7 @@ export default function RenderSettings({
   onAspectRatioChange,
   onResolutionChange,
   compact = false,
+  showAspectRatio = true,
 }: RenderSettingsProps) {
   const selectedResolution = RENDER_RESOLUTIONS.find(r => r.value === resolution);
 
@@ -63,6 +65,7 @@ export default function RenderSettings({
           </div>
 
           {/* Aspect Ratio Pills */}
+          {showAspectRatio && (
           <div>
             <label className="block text-xs text-surface-500 mb-2">Aspect Ratio</label>
             <div className="grid grid-cols-2 gap-2">
@@ -81,6 +84,7 @@ export default function RenderSettings({
               ))}
             </div>
           </div>
+          )}
 
           {/* Dimensions Display */}
           <div className="pt-2 border-t border-surface-100">

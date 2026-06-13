@@ -97,6 +97,8 @@ function MainApp({ initialSessionId }: MainAppProps) {
   // Export state
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [exportStatusLabel, setExportStatusLabel] = useState<string | null>(null);
+  const [exportAspectRatios, setExportAspectRatios] = useState<string[]>(['9:16']);
   const [error, setError] = useState<string | null>(null);
   
   // Initialize session (skip if we have one from transform flow)
@@ -199,9 +201,23 @@ function MainApp({ initialSessionId }: MainAppProps) {
     setSettings(s => ({ ...s, start_time: start, end_time: end }));
   }, []);
   
-  // Handle aspect ratio change
+  // Handle aspect ratio change (preview only; export selection is separate)
   const handleAspectRatioChange = useCallback((value: string) => {
+    const oldRatio = settings.aspect_ratio;
     setSettings(s => ({ ...s, aspect_ratio: value }));
+    setExportAspectRatios(prev =>
+      prev.length === 1 && prev[0] === oldRatio ? [value] : prev
+    );
+  }, [settings.aspect_ratio]);
+
+  const handleExportAspectRatioToggle = useCallback((value: string) => {
+    setExportAspectRatios(prev => {
+      if (prev.includes(value)) {
+        if (prev.length === 1) return prev;
+        return prev.filter(r => r !== value);
+      }
+      return [...prev, value];
+    });
   }, []);
 
   // Handle resolution change
@@ -287,6 +303,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
         aspect_ratio: '9:16',
         effect_toggles: DEFAULT_EFFECT_TOGGLES,
       });
+      setExportAspectRatios(['9:16']);
       setAudioAnalysis(null);
       setCurrentStep(1);
       setError('Your session expired. Please re-upload your files.');
@@ -360,12 +377,13 @@ function MainApp({ initialSessionId }: MainAppProps) {
   
   // Export video
   const handleExport = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sessionId || exportAspectRatios.length === 0) return;
     
     try {
       setError(null);
       setIsExporting(true);
       setExportProgress(0);
+      setExportStatusLabel(null);
       
       // Get resolution scale from selected resolution
       const selectedRes = RENDER_RESOLUTIONS.find(r => r.value === resolution);
@@ -382,6 +400,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
         start_time: settings.start_time,
         end_time: settings.end_time,
         aspect_ratio: settings.aspect_ratio,
+        aspect_ratios: exportAspectRatios,
         effect_toggles: effectToggles,
       });
       
@@ -389,18 +408,45 @@ function MainApp({ initialSessionId }: MainAppProps) {
       const pollExportStatus = async () => {
         const status = await getGenerationStatus(sessionId);
         setExportProgress(status.progress * 100);
+
+        if (status.export_total && status.export_total > 1) {
+          const completed = status.export_completed ?? 0;
+          const current = status.export_current_ratio ?? '';
+          setExportStatusLabel(
+            status.status === 'export_complete'
+              ? null
+              : `Exporting ${Math.min(completed + 1, status.export_total)}/${status.export_total} — ${current}`
+          );
+        } else if (status.export_current_ratio && status.status === 'exporting') {
+          setExportStatusLabel(`Exporting ${status.export_current_ratio}`);
+        }
         
         if (status.status === 'export_complete') {
           setIsExporting(false);
-          // Trigger download
-          const link = document.createElement('a');
-          link.href = getDownloadUrl(sessionId);
-          link.download = 'beat-reactive-video.mp4';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
+          setExportStatusLabel(null);
+
+          const files = status.export_files ?? [];
+          if (files.length > 0) {
+            for (const file of files) {
+              await new Promise(resolve => setTimeout(resolve, 300));
+              const link = document.createElement('a');
+              link.href = getDownloadUrl(sessionId, file.aspect_ratio);
+              link.download = file.filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }
+          } else {
+            const link = document.createElement('a');
+            link.href = getDownloadUrl(sessionId);
+            link.download = 'beat-reactive-video.mp4';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+          }
         } else if (status.status === 'error') {
           setIsExporting(false);
+          setExportStatusLabel(null);
           setError('Export failed. Please try again.');
         } else {
           setTimeout(pollExportStatus, 500);
@@ -410,6 +456,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
       pollExportStatus();
     } catch (err) {
       setIsExporting(false);
+      setExportStatusLabel(null);
       const errorMessage = err instanceof Error ? err.message : 'Failed to export video';
       
       // Check if this is a session/file missing error
@@ -422,9 +469,12 @@ function MainApp({ initialSessionId }: MainAppProps) {
         setError(errorMessage);
       }
     }
-  }, [sessionId, resolution, settings, effectToggles, handleSessionReset]);
+  }, [sessionId, resolution, settings, effectToggles, exportAspectRatios, handleSessionReset]);
   
-  const canExport = imageFile && audioFile && settings.end_time > settings.start_time;
+  const canExport = imageFile && audioFile && settings.end_time > settings.start_time && exportAspectRatios.length > 0;
+  const exportButtonLabel = exportAspectRatios.length > 1
+    ? `Export ${exportAspectRatios.length} formats at ${resolution}`
+    : `Export at ${resolution}`;
   const selectedDuration = settings.end_time - settings.start_time;
   
   return (
@@ -567,7 +617,8 @@ function MainApp({ initialSessionId }: MainAppProps) {
 
                 <div className="space-y-6">
                   <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                    <span className="text-sm font-medium text-surface-700 block mb-3">Aspect Ratio</span>
+                    <span className="text-sm font-medium text-surface-700 block mb-1">Preview Aspect Ratio</span>
+                    <p className="text-xs text-surface-500 mb-3">Controls the live preview canvas</p>
                     <div className="grid grid-cols-2 gap-2">
                       {ASPECT_RATIOS.map((ratio) => (
                         <button
@@ -604,7 +655,39 @@ function MainApp({ initialSessionId }: MainAppProps) {
                     onAspectRatioChange={handleAspectRatioChange}
                     onResolutionChange={handleResolutionChange}
                     compact
+                    showAspectRatio={false}
                   />
+
+                  <div className="bg-white rounded-2xl border border-surface-200 p-4">
+                    <span className="text-sm font-medium text-surface-700 block mb-1">Export Formats</span>
+                    <p className="text-xs text-surface-500 mb-3">Select one or more aspect ratios to export</p>
+                    <div className="space-y-2">
+                      {ASPECT_RATIOS.map((ratio) => {
+                        const isSelected = exportAspectRatios.includes(ratio.value);
+                        return (
+                          <label
+                            key={ratio.value}
+                            className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all ${
+                              isSelected
+                                ? 'bg-accent/10 border border-accent/30'
+                                : 'bg-surface-50 border border-transparent hover:bg-surface-100'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => handleExportAspectRatioToggle(ratio.value)}
+                              className="w-4 h-4 rounded border-surface-300 text-accent focus:ring-accent/50"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium text-surface-700">{ratio.label}</div>
+                              <div className="text-xs text-surface-500">{ratio.description}</div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
 
                   <button
                     onClick={handleExport}
@@ -614,12 +697,12 @@ function MainApp({ initialSessionId }: MainAppProps) {
                     {isExporting ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Exporting at {resolution}...
+                        {exportStatusLabel ?? `Exporting at ${resolution}...`}
                       </>
                     ) : (
                       <>
                         <Download className="w-4 h-4" />
-                        Export at {resolution}
+                        {exportButtonLabel}
                       </>
                     )}
                   </button>

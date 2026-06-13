@@ -1,4 +1,4 @@
-import { EffectToggles, ImageAnalysis, AudioFeatures, AudioMetrics, GenerateSettings } from './types';
+import { EffectToggles, ImageAnalysis, AudioFeatures, AudioMetrics, GenerateSettings, GenerationStatus } from './types';
 
 const API_BASE = '/api';
 
@@ -183,12 +183,7 @@ export async function generateVideo(
   }
 }
 
-export async function getGenerationStatus(sessionId: string): Promise<{
-  status: 'idle' | 'rendering' | 'complete' | 'error' | 'exporting' | 'export_complete';
-  progress: number;
-  output_path: string | null;
-  playbook: any | null;
-}> {
+export async function getGenerationStatus(sessionId: string): Promise<GenerationStatus> {
   const res = await fetch(`${API_BASE}/generate/status/${sessionId}`);
   if (!res.ok) throw new Error('Failed to get status');
   return res.json();
@@ -201,8 +196,10 @@ export async function getGenerationStatus(sessionId: string): Promise<{
 export async function exportVideo(
   sessionId: string,
   resolutionScale?: number,
-  settings?: Pick<GenerateSettings, 'start_time' | 'end_time' | 'aspect_ratio' | 'effect_toggles'>
-): Promise<{ message: string; session_id: string }> {
+  settings?: Pick<GenerateSettings, 'start_time' | 'end_time' | 'aspect_ratio' | 'effect_toggles'> & {
+    aspect_ratios?: string[];
+  }
+): Promise<{ message: string; session_id: string; aspect_ratios?: string[] }> {
   const res = await fetch(`${API_BASE}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -212,6 +209,7 @@ export async function exportVideo(
       start_time: settings?.start_time,
       end_time: settings?.end_time,
       aspect_ratio: settings?.aspect_ratio,
+      aspect_ratios: settings?.aspect_ratios,
       effect_toggles: settings?.effect_toggles,
     }),
   });
@@ -235,8 +233,10 @@ export function getAudioStreamUrl(sessionId: string): string {
   return `${API_BASE}/audio/stream/${sessionId}`;
 }
 
-export function getDownloadUrl(sessionId: string): string {
-  return `${API_BASE}/download/${sessionId}`;
+export function getDownloadUrl(sessionId: string, aspectRatio?: string): string {
+  const base = `${API_BASE}/download/${sessionId}`;
+  if (!aspectRatio) return base;
+  return `${base}?aspect_ratio=${encodeURIComponent(aspectRatio)}`;
 }
 
 // ============================================================================
