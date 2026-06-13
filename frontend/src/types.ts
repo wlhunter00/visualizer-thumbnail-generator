@@ -65,6 +65,14 @@ export const DEFAULT_EFFECT_TOGGLES: EffectToggles = {
   background_dim: { enabled: false, intensity: 0.3, radius: 0.5, trigger_source: 'beats' },
 };
 
+export interface SavedEffectPreset {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  effect_toggles: EffectToggles;
+}
+
 // Effect metadata for UI
 export interface EffectMeta {
   key: keyof EffectToggles;

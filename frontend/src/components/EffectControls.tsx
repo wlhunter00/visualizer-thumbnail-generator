@@ -18,10 +18,12 @@ import {
   ChevronUp,
   Loader2
 } from 'lucide-react';
+import PresetControls from './PresetControls';
 
 interface EffectControlsProps {
   effectToggles: EffectToggles;
   onChange: (toggles: EffectToggles) => void;
+  onLoadPreset: (toggles: EffectToggles) => void;
   onAutoSuggest?: () => void;
   isAutoSuggesting?: boolean;
   imageAnalysis?: ImageAnalysis | null;
@@ -95,6 +97,7 @@ function TriggerSourceSelect({ value, options, onChange }: TriggerSourceSelectPr
 export default function EffectControls({
   effectToggles,
   onChange,
+  onLoadPreset,
   onAutoSuggest,
   isAutoSuggesting = false,
   imageAnalysis,
@@ -160,6 +163,11 @@ export default function EffectControls({
           )}
         </button>
       )}
+
+      <PresetControls
+        effectToggles={effectToggles}
+        onLoad={onLoadPreset}
+      />
 
       {/* Image Analysis Info */}
       {imageAnalysis && (

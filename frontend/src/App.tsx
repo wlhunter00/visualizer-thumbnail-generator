@@ -230,6 +230,10 @@ function MainApp({ initialSessionId }: MainAppProps) {
     setEffectToggles(toggles);
     setSettings(s => ({ ...s, effect_toggles: toggles }));
   }, []);
+
+  const handleLoadPreset = useCallback((toggles: EffectToggles) => {
+    handleEffectTogglesChange(toggles);
+  }, [handleEffectTogglesChange]);
   
   // NEW: Handle auto-suggest
   const handleAutoSuggest = useCallback(async () => {
@@ -644,6 +648,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
                   <EffectControls
                     effectToggles={effectToggles}
                     onChange={handleEffectTogglesChange}
+                    onLoadPreset={handleLoadPreset}
                     onAutoSuggest={handleAutoSuggest}
                     isAutoSuggesting={isAutoSuggesting}
                     imageAnalysis={imageAnalysis}

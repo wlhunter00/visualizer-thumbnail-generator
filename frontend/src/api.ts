@@ -1,4 +1,4 @@
-import { EffectToggles, ImageAnalysis, AudioFeatures, AudioMetrics, GenerateSettings, GenerationStatus } from './types';
+import { EffectToggles, ImageAnalysis, AudioFeatures, AudioMetrics, GenerateSettings, GenerationStatus, SavedEffectPreset } from './types';
 
 const API_BASE = '/api';
 
@@ -284,6 +284,58 @@ export async function getDemoManifest(): Promise<DemoManifest> {
 
 export function getDemoVideoUrl(effectKey: string): string {
   return `${API_BASE}/demos/${effectKey}.mp4`;
+}
+
+// ============================================================================
+// Effect Preset Endpoints
+// ============================================================================
+
+export async function getEffectPresets(): Promise<{ presets: SavedEffectPreset[] }> {
+  const res = await fetch(`${API_BASE}/effect-presets`);
+  if (!res.ok) throw new Error('Failed to load effect presets');
+  return res.json();
+}
+
+export async function createEffectPreset(
+  name: string,
+  effectToggles: EffectToggles
+): Promise<SavedEffectPreset> {
+  const res = await fetch(`${API_BASE}/effect-presets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, effect_toggles: effectToggles }),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || 'Failed to save preset');
+  }
+  return res.json();
+}
+
+export async function updateEffectPreset(
+  presetId: string,
+  updates: { name?: string; effect_toggles?: EffectToggles }
+): Promise<SavedEffectPreset> {
+  const res = await fetch(`${API_BASE}/effect-presets/${presetId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || 'Failed to update preset');
+  }
+  return res.json();
+}
+
+export async function deleteEffectPreset(presetId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/effect-presets/${presetId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || 'Failed to delete preset');
+  }
 }
 
 // ============================================================================

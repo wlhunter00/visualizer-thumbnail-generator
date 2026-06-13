@@ -211,6 +211,16 @@ class SessionSettingsRequest(BaseModel):
     effect_toggles: Optional[Dict[str, Any]] = None
 
 
+class CreateEffectPresetRequest(BaseModel):
+    name: str
+    effect_toggles: Dict[str, Any]
+
+
+class UpdateEffectPresetRequest(BaseModel):
+    name: Optional[str] = None
+    effect_toggles: Optional[Dict[str, Any]] = None
+
+
 class ExportRequest(BaseModel):
     session_id: str
     quality: str = "high"
@@ -768,6 +778,55 @@ async def update_effect_toggles(session_id: str, toggles: Dict[str, Any]):
     
     sessions[session_id].effect_toggles = toggles
     return {"message": "Effect toggles updated"}
+
+
+# ============================================================================
+# Effect Preset Endpoints
+# ============================================================================
+
+@app.get("/effect-presets")
+async def list_effect_presets():
+    """List all saved effect presets."""
+    from effect_presets import load_presets
+    presets = load_presets()
+    return {"presets": [p.to_dict() for p in presets]}
+
+
+@app.post("/effect-presets")
+async def create_effect_preset(request: CreateEffectPresetRequest):
+    """Save current effect toggles as a named preset."""
+    from effect_presets import save_preset
+    try:
+        preset = save_preset(request.name, request.effect_toggles)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return preset.to_dict()
+
+
+@app.put("/effect-presets/{preset_id}")
+async def update_effect_preset(preset_id: str, request: UpdateEffectPresetRequest):
+    """Update an existing effect preset."""
+    from effect_presets import update_preset
+    try:
+        preset = update_preset(
+            preset_id,
+            name=request.name,
+            effect_toggles=request.effect_toggles,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if preset is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return preset.to_dict()
+
+
+@app.delete("/effect-presets/{preset_id}")
+async def delete_effect_preset(preset_id: str):
+    """Delete a saved effect preset."""
+    from effect_presets import delete_preset
+    if not delete_preset(preset_id):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"ok": True}
 
 
 # ============================================================================
