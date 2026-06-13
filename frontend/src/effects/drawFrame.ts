@@ -5,7 +5,6 @@ import { ParticleSystem } from './particleSystem';
 export interface DrawFrameState {
   particleSystem: ParticleSystem;
   lastClipTime: number;
-  lastScale: number;
   noiseCanvas: HTMLCanvasElement | null;
 }
 
@@ -13,7 +12,6 @@ export function createDrawState(): DrawFrameState {
   return {
     particleSystem: new ParticleSystem(),
     lastClipTime: -1,
-    lastScale: -1,
     noiseCanvas: null,
   };
 }
@@ -48,38 +46,6 @@ function drawSubjectClipped(
   ctx.clip();
   ctx.drawImage(baseImage, 0, 0, w, h);
   ctx.restore();
-}
-
-function drawEchoTrailSubjects(
-  ctx: CanvasRenderingContext2D,
-  baseImage: HTMLCanvasElement,
-  w: number,
-  h: number,
-  bounds: { x: number; y: number; w: number; h: number; center_x: number; center_y: number },
-  scale: number,
-  state: DrawFrameState,
-  values: EffectValues
-) {
-  const count = values.echo_trail_count as number;
-  const decay = values.echo_trail_decay as number;
-  const intensity = values.echo_trail_intensity as number;
-  if (!intensity || count <= 0) return;
-
-  const scaleDelta = state.lastScale >= 0 ? scale - state.lastScale : 0;
-  const motion = Math.abs(scaleDelta);
-  const spread = Math.max(w, h) * (motion > 0.0005 ? motion * 6 : 0.008 * intensity);
-  const dirX = scaleDelta !== 0 ? Math.sign(scaleDelta) : 1;
-  const dirY = scaleDelta !== 0 ? Math.sign(scaleDelta) * 0.5 : 0.5;
-
-  for (let i = count; i >= 1; i--) {
-    const alpha = intensity * Math.pow(decay, i) * 0.55;
-    if (alpha < 0.03) continue;
-
-    const ghostScale = scale * (1 - i * 0.01 * intensity);
-    const ox = dirX * spread * i;
-    const oy = dirY * spread * i;
-    drawSubjectClipped(ctx, baseImage, w, h, bounds, ghostScale, alpha, ox, oy);
-  }
 }
 
 function getNoiseCanvas(state: DrawFrameState, w: number, h: number): HTMLCanvasElement {
@@ -348,17 +314,8 @@ export function drawFrame(
 
   const b = values.subject_bounds as { x: number; y: number; w: number; h: number; center_x: number; center_y: number };
 
-  // Echo trail: ghost copies of the subject (preview approximation; export uses temporal compositing)
-  if (values.echo_trail_enabled) {
-    if (state.lastClipTime >= 0 && clipTime + 0.02 < state.lastClipTime) {
-      state.lastScale = -1;
-    }
-    drawEchoTrailSubjects(ctx, baseImage, w, h, b, scale, state, values);
-  }
-
   // Re-draw subject on top after dim
   drawSubjectClipped(ctx, baseImage, w, h, b, scale, 1);
-  state.lastScale = scale;
 
   drawGlow(ctx, w, h, values);
   drawNeonOutline(ctx, w, h, values);
@@ -400,5 +357,4 @@ export function drawFrame(
 export function resetDrawState(state: DrawFrameState) {
   state.particleSystem.reset();
   state.lastClipTime = -1;
-  state.lastScale = -1;
 }

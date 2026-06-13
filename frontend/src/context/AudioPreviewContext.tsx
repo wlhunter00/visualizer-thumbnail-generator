@@ -20,6 +20,7 @@ interface AudioPreviewContextValue {
   restart: () => Promise<void>;
   toggle: () => void;
   setRegion: (start: number, end: number) => void;
+  seekTo: (time: number, autoPlay?: boolean) => Promise<void>;
 }
 
 const AudioPreviewContext = createContext<AudioPreviewContextValue | null>(null);
@@ -147,6 +148,22 @@ export function AudioPreviewProvider({
     stopRaf();
   }, [stopRaf]);
 
+  const seekTo = useCallback(async (time: number, autoPlay = false) => {
+    const audio = audioRef.current;
+    if (!audio || !audioUrl) return;
+    const clamped = Math.max(startTime, Math.min(time, endTime));
+    audio.currentTime = clamped;
+    setAbsoluteTime(clamped);
+    if (autoPlay) {
+      await audio.play();
+      setIsPlaying(true);
+    } else {
+      audio.pause();
+      setIsPlaying(false);
+      stopRaf();
+    }
+  }, [audioUrl, startTime, endTime, stopRaf]);
+
   return (
     <AudioPreviewContext.Provider
       value={{
@@ -161,6 +178,7 @@ export function AudioPreviewProvider({
         restart,
         toggle,
         setRegion,
+        seekTo,
       }}
     >
       {audioUrl && <audio ref={audioRef} preload="auto" className="hidden" />}

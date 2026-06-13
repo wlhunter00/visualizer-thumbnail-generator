@@ -33,16 +33,16 @@ class TestNormalizeSuggestion(TestCase):
             "average_energy": 0.7,
         }
 
-    def test_strips_trigger_from_echo_trail(self):
+    def test_strips_trigger_from_energy_trails(self):
         raw = {
-            "echo_trail": {
+            "energy_trails": {
                 "enabled": True,
                 "intensity": 0.5,
                 "trigger_source": "low",
             }
         }
         result = normalize_suggestion(raw, self.bass_heavy_metrics, self.image)
-        self.assertNotIn("trigger_source", result["echo_trail"])
+        self.assertNotIn("trigger_source", result["energy_trails"])
 
     def test_invalid_trigger_coerced_to_default(self):
         raw = {

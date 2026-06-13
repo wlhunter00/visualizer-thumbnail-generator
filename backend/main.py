@@ -170,7 +170,6 @@ class EffectToggleModel(BaseModel):
 class EffectTogglesRequest(BaseModel):
     element_glow: Optional[EffectToggleModel] = None
     element_scale: Optional[EffectToggleModel] = None
-    echo_trail: Optional[EffectToggleModel] = None
     particle_burst: Optional[EffectToggleModel] = None
     energy_trails: Optional[EffectToggleModel] = None
     light_flares: Optional[EffectToggleModel] = None
@@ -1048,7 +1047,6 @@ def generate_playbook_v2(
     effect_names = {
         "element_glow": "Element Glow",
         "element_scale": "Scale Pulse",
-        "echo_trail": "Echo Trail",
         "particle_burst": "Particle Burst",
         "energy_trails": "Energy Trails",
         "light_flares": "Light Flares",

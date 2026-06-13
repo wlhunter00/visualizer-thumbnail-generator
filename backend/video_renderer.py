@@ -40,6 +40,13 @@ PREVIEW_DIMENSIONS = {
     AspectRatio.PORTRAIT: (540, 675),
 }
 
+PREVIEW_REFERENCE_WIDTH = 540
+
+
+def preview_scale(width: int) -> float:
+    """Scale preview-tuned pixel values to the current render width."""
+    return width / PREVIEW_REFERENCE_WIDTH
+
 
 @dataclass
 class RenderSettings:
@@ -84,6 +91,9 @@ class ParticleSystem:
         width: int, height: int
     ):
         """Spawn particles from the perimeter of the subject's elliptical bounds."""
+        scale = preview_scale(width)
+        scaled_speed = speed * scale
+        scaled_size_range = (size_range[0] * scale, size_range[1] * scale)
         # Calculate center and radii in pixels
         center_x = (bounds_x + bounds_w / 2) * width
         center_y = (bounds_y + bounds_h / 2) * height
@@ -99,14 +109,14 @@ class ParticleSystem:
             spawn_y = center_y + math.sin(angle) * radius_y
             
             # Velocity radiates outward from center
-            velocity = speed * (0.5 + random.random() * 0.5)
+            velocity = scaled_speed * (0.5 + random.random() * 0.5)
             
             self.particles.append(Particle(
                 x=spawn_x,
                 y=spawn_y,
                 vx=math.cos(angle) * velocity,
                 vy=math.sin(angle) * velocity,
-                size=random.uniform(size_range[0], size_range[1]),
+                size=random.uniform(scaled_size_range[0], scaled_size_range[1]),
                 color=random.choice(colors),
                 alpha=0.8 + random.random() * 0.2,
                 birth_time=time,
@@ -219,9 +229,6 @@ def render_video(
     particle_system = ParticleSystem()
     previous_bursts = set()  # Track which bursts we've already spawned
     
-    # Store echo trail frames
-    echo_frames: List[Image.Image] = []
-    
     with tempfile.TemporaryDirectory() as temp_dir:
         frame_pattern = os.path.join(temp_dir, "frame_%06d.png")
         
@@ -277,28 +284,6 @@ def render_video(
                     effects.get("element_glow_radius", 50),
                     effects.get("element_glow_color", (255, 200, 100)),
                     width, height
-                )
-            
-            # ================================================================
-            # LAYER 5: ECHO TRAIL
-            # ================================================================
-            # Store frame BEFORE applying echo (so we echo clean frames, not echoes of echoes)
-            if effects.get("echo_trail_enabled", False):
-                echo_frames.append(frame.copy())
-                max_frames = effects.get("echo_trail_count", 5) + 2
-                if len(echo_frames) > max_frames:
-                    echo_frames.pop(0)
-            elif echo_frames:
-                # Clear accumulated frames when effect is disabled to free memory
-                echo_frames.clear()
-            
-            # Now apply the echo trail effect
-            if effects.get("echo_trail_enabled", False):
-                frame = apply_echo_trail(
-                    frame, echo_frames[:-1],  # Exclude current frame from echoes
-                    effects.get("echo_trail_count", 5),
-                    effects.get("echo_trail_decay", 0.7),
-                    effects.get("echo_trail_intensity", 0.5)
                 )
             
             # ================================================================
@@ -360,7 +345,14 @@ def render_video(
                 )
             
             # ================================================================
-            # LAYER 10: FILM GRAIN
+            # LAYER 10: VIGNETTE
+            # ================================================================
+            vignette_strength = effects.get("vignette_strength", 0)
+            if vignette_strength > 0.01:
+                frame = apply_vignette(frame, vignette_strength, width, height)
+            
+            # ================================================================
+            # LAYER 11: FILM GRAIN
             # ================================================================
             if effects.get("film_grain_enabled", False):
                 frame = apply_film_grain(
@@ -370,7 +362,7 @@ def render_video(
                 )
             
             # ================================================================
-            # LAYER 11: STROBE FLASH
+            # LAYER 12: STROBE FLASH
             # ================================================================
             if effects.get("strobe_active", False):
                 frame = apply_strobe_flash(
@@ -378,13 +370,6 @@ def render_video(
                     effects.get("strobe_intensity", 0.5),
                     effects.get("strobe_color", (255, 255, 255))
                 )
-            
-            # ================================================================
-            # LAYER 12: VIGNETTE
-            # ================================================================
-            vignette_strength = effects.get("vignette_strength", 0)
-            if vignette_strength > 0.01:
-                frame = apply_vignette(frame, vignette_strength, width, height)
             
             # ================================================================
             # LAYER 13: GLITCH (last — matches preview compositing order)
@@ -496,7 +481,8 @@ def apply_background_dim(
     bg = image.copy()
     
     if blur_amount > 0.1:
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=blur_amount))
+        scaled_blur = blur_amount * preview_scale(width)
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=scaled_blur))
     
     if dim_amount > 0.01:
         enhancer = ImageEnhance.Brightness(bg)
@@ -551,9 +537,10 @@ def apply_ripple_wave(
     radius_x = (bounds_w / 2) * width
     radius_y = (bounds_h / 2) * height
     
-    ripple_radius = ripple.get("radius", 100)  # How far the ripple has expanded
-    amplitude = ripple.get("amplitude", 10) * intensity
-    wavelength = ripple.get("wavelength", 50)
+    scale = preview_scale(width)
+    ripple_radius = ripple.get("radius", 100) * scale
+    amplitude = ripple.get("amplitude", 10) * intensity * scale
+    wavelength = ripple.get("wavelength", 50) * scale
     
     if amplitude < 1:
         return image
@@ -675,6 +662,8 @@ def apply_element_glow(
     if intensity < 0.01:
         return image
     
+    scaled_radius = radius * preview_scale(width)
+
     # Create glow layer
     glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(glow)
@@ -685,8 +674,9 @@ def apply_element_glow(
     bh = int(bounds.get("h", 0.5) * height)
     
     # Draw multiple ellipses for glow
-    for i in range(int(radius), 0, -5):
-        alpha = int(intensity * 100 * (i / radius))
+    step = max(3, int(5 * preview_scale(width)))
+    for i in range(int(scaled_radius), 0, -step):
+        alpha = int(intensity * 100 * (i / scaled_radius))
         glow_color = (*color, min(255, alpha))
         
         rx = bw // 2 + i
@@ -695,82 +685,9 @@ def apply_element_glow(
         draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=glow_color)
     
     # Blur the glow
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=radius / 3))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=scaled_radius / 3))
     
     return Image.alpha_composite(image, glow)
-
-
-def apply_echo_trail(
-    image: Image.Image,
-    echo_frames: List[Image.Image],
-    trail_count: int,
-    decay: float,
-    intensity: float,
-    offset_x: float = 0,
-    offset_y: float = 0
-) -> Image.Image:
-    """Apply echo/ghost trail effect with offset to create visible trailing.
-    
-    Each echo is offset progressively further based on age, creating
-    a motion blur / speed lines effect even on static images.
-    
-    Args:
-        offset_x, offset_y: Per-frame offset in pixels. Older echoes are
-            offset by age * offset. If both are 0, uses a default diagonal offset.
-    """
-    if not echo_frames or intensity < 0.01:
-        return image
-    
-    width, height = image.size
-    
-    # Default offset creates a subtle diagonal trailing effect
-    # Scale offset based on image size for consistent appearance
-    if offset_x == 0 and offset_y == 0:
-        base_offset = max(width, height) * 0.008 * intensity  # ~0.8% of image per echo
-        offset_x = base_offset
-        offset_y = base_offset * 0.5  # Slightly more horizontal than vertical
-    
-    # Start with transparent canvas to composite echoes underneath
-    result = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    
-    # Draw older echoes first (furthest back), working toward newer
-    frames_to_use = echo_frames[-trail_count:]
-    
-    # Process from oldest to newest (oldest drawn first, underneath)
-    for i, old_frame in enumerate(frames_to_use):
-        # Age: oldest frame has highest age
-        age = len(frames_to_use) - i
-        alpha = intensity * (decay ** age)
-        
-        if alpha < 0.03:
-            continue
-        
-        # Calculate offset for this echo (older = further offset)
-        echo_offset_x = int(offset_x * age)
-        echo_offset_y = int(offset_y * age)
-        
-        # Create offset version of the frame
-        offset_frame = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        
-        # Paste the old frame with offset (crop to stay within bounds)
-        paste_x = -echo_offset_x
-        paste_y = -echo_offset_y
-        offset_frame.paste(old_frame, (paste_x, paste_y))
-        
-        # Apply alpha to the offset frame
-        # We need to modify just the alpha channel, preserving RGB
-        r, g, b, a = offset_frame.split()
-        # Multiply existing alpha by our decay alpha
-        a = a.point(lambda x: int(x * alpha))
-        offset_frame = Image.merge("RGBA", (r, g, b, a))
-        
-        # Composite onto result
-        result = Image.alpha_composite(result, offset_frame)
-    
-    # Finally composite the current image on top
-    result = Image.alpha_composite(result, image)
-    
-    return result
 
 
 def apply_energy_trails(
@@ -787,7 +704,7 @@ def apply_energy_trails(
     
     count = params.get("count", 8)
     colors = params.get("colors", [(255, 200, 100)])
-    trail_width = params.get("width", 2)
+    trail_width = params.get("width", 2) * preview_scale(width)
     speed = params.get("speed", 1.0)
     time = params.get("time", 0)
     intensity = params.get("intensity", 0.5)
@@ -802,9 +719,9 @@ def apply_energy_trails(
     center_x = (bounds_x + bounds_w / 2) * width
     center_y = (bounds_y + bounds_h / 2) * height
     
-    # Orbit radii based on subject size (slightly larger than bounds)
-    orbit_radius_x = (bounds_w / 2) * width * 1.3
-    orbit_radius_y = (bounds_h / 2) * height * 1.3
+    # Orbit radii based on subject size (matches preview: 1.2x bounds)
+    orbit_radius_x = (bounds_w / 2) * width * 1.2
+    orbit_radius_y = (bounds_h / 2) * height * 1.2
     
     for i in range(count):
         base_angle = (i / count) * 2 * math.pi
@@ -852,6 +769,7 @@ def apply_light_flares(
     if intensity < 0.01 or not points:
         return image
     
+    scaled_size = size * preview_scale(width)
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
@@ -861,25 +779,28 @@ def apply_light_flares(
         color = colors[i % len(colors)]
         
         # Draw main flare
-        for r in range(int(size), 0, -5):
-            alpha = int(intensity * 150 * (r / size))
+        step = max(3, int(5 * preview_scale(width)))
+        for r in range(int(scaled_size * intensity), 0, -step):
+            flare_radius = scaled_size * intensity
+            alpha = int(intensity * 150 * (r / flare_radius)) if flare_radius > 0 else 0
             flare_color = (*color, alpha)
             draw.ellipse([x - r, y - r, x + r, y + r], fill=flare_color)
         
         # Draw horizontal streak
-        streak_length = int(size * 1.5)
+        streak_length = int(scaled_size * intensity * 1.5)
+        dot_radius = max(2, int(3 * preview_scale(width)))
         for offset in range(-streak_length, streak_length, 2):
-            dist = abs(offset) / streak_length
+            dist = abs(offset) / max(streak_length, 1)
             alpha = int(intensity * 100 * (1 - dist))
             streak_color = (*color, alpha)
-            draw.ellipse([x + offset - 3, y - 3, x + offset + 3, y + 3], fill=streak_color)
+            draw.ellipse(
+                [x + offset - dot_radius, y - dot_radius, x + offset + dot_radius, y + dot_radius],
+                fill=streak_color,
+            )
     
-    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=size / 5))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=max(1, scaled_size / 5)))
     
     return Image.alpha_composite(image, overlay)
-
-
-PREVIEW_REFERENCE_WIDTH = 540
 
 
 def apply_glitch(
@@ -898,7 +819,7 @@ def apply_glitch(
         return image
 
     result = image.copy()
-    scale = width / PREVIEW_REFERENCE_WIDTH
+    scale = preview_scale(width)
     split_px = max(chromatic, rgb_split) * scale
     offset = int(round(split_px))
 
@@ -945,26 +866,18 @@ def apply_film_grain(
     intensity: float,
     grain_size: float
 ) -> Image.Image:
-    """Apply film grain texture."""
+    """Apply film grain texture (matches preview alpha overlay)."""
     if intensity < 0.01:
         return image
     
     width, height = image.size
-    
-    # Create noise
-    noise = np.random.normal(0, intensity * 50, (height, width, 3)).astype(np.int16)
-    
-    # Apply to image
-    img_array = np.array(image.convert("RGB")).astype(np.int16)
-    result = np.clip(img_array + noise, 0, 255).astype(np.uint8)
-    
-    result_img = Image.fromarray(result, mode="RGB").convert("RGBA")
-    
-    # Preserve alpha
-    if image.mode == "RGBA":
-        result_img.putalpha(image.split()[3])
-    
-    return result_img
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    noise = np.random.randint(0, 256, (height, width), dtype=np.uint8)
+    noise_rgb = np.stack([noise, noise, noise], axis=-1)
+    alpha = int(intensity * 0.25 * 255)
+    noise_rgba = np.dstack([noise_rgb, np.full((height, width), alpha, dtype=np.uint8)])
+    overlay = Image.fromarray(noise_rgba, mode="RGBA")
+    return Image.alpha_composite(image, overlay)
 
 
 def apply_strobe_flash(
@@ -972,37 +885,13 @@ def apply_strobe_flash(
     intensity: float,
     color: Tuple[int, int, int]
 ) -> Image.Image:
-    """Apply strobe flash effect with radial falloff - bright center, fading edges."""
+    """Apply full-frame strobe flash (matches preview drawStrobe)."""
     if intensity < 0.01:
         return image
     
     width, height = image.size
-    cx, cy = width // 2, height // 2
-    
-    # Create coordinate grids for radial falloff
-    y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
-    
-    # Calculate distance from center
-    max_dist = math.sqrt(cx * cx + cy * cy)
-    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
-    normalized_dist = dist / max_dist
-    
-    # Create radial falloff - bright in center, fades toward edges
-    # Using smooth falloff curve
-    falloff = 1 - (normalized_dist ** 0.7)
-    falloff = np.clip(falloff, 0, 1)
-    
-    # Reduce max intensity significantly - 80 alpha max instead of 200
-    # This creates a bright highlight rather than whiteout
-    max_alpha = intensity * 80
-    alpha_array = (falloff * max_alpha).astype(np.uint8)
-    
-    # Create the flash overlay with gradient alpha
-    flash_rgb = Image.new("RGB", (width, height), color)
-    flash_alpha = Image.fromarray(alpha_array, mode="L")
-    flash = flash_rgb.copy()
-    flash.putalpha(flash_alpha)
-    
+    alpha = int(intensity * 0.7 * 255)
+    flash = Image.new("RGBA", (width, height), (*color, alpha))
     return Image.alpha_composite(image, flash)
 
 

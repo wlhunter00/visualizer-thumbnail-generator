@@ -33,14 +33,6 @@ export interface ElementScaleParams {
   triggers: [number, number][];
 }
 
-export interface EchoTrailParams {
-  enabled: boolean;
-  intensity: number;
-  trail_count: number;
-  trail_spacing: number;
-  opacity_decay: number;
-}
-
 export interface ParticleBurstParams {
   enabled: boolean;
   intensity: number;
@@ -139,7 +131,6 @@ export interface EffectParameters {
   subject_bounds: SubjectBounds;
   element_glow: ElementGlowParams;
   element_scale: ElementScaleParams;
-  echo_trail: EchoTrailParams;
   particle_burst: ParticleBurstParams;
   energy_trails: EnergyTrailsParams;
   light_flares: LightFlaresParams;

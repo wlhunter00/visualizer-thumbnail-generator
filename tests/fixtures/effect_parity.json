@@ -23,7 +23,6 @@
   "toggles": {
     "element_glow": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
     "element_scale": { "enabled": true, "intensity": 0.3, "trigger_source": "beats" },
-    "echo_trail": { "enabled": false, "intensity": 0.4 },
     "particle_burst": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
     "energy_trails": { "enabled": false, "intensity": 0.4 },
     "light_flares": { "enabled": false, "intensity": 0.3 },

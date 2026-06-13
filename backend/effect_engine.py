@@ -31,7 +31,6 @@ class EffectToggles:
     # Element effects
     element_glow: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.5))
     element_scale: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.3))
-    echo_trail: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.4))
     
     # Particle effects
     particle_burst: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.5))
@@ -105,16 +104,6 @@ class ElementScaleParams:
     base_scale: float = 1.0
     max_scale: float = 1.1
     triggers: List[Tuple[float, float]] = field(default_factory=list)  # (time, strength)
-
-
-@dataclass
-class EchoTrailParams:
-    """Parameters for echo/ghost trail effect."""
-    enabled: bool = False
-    intensity: float = 0.4
-    trail_count: int = 5
-    trail_spacing: float = 0.05  # Time offset between trails
-    opacity_decay: float = 0.7  # Each trail is this much dimmer
 
 
 @dataclass
@@ -237,10 +226,9 @@ class EffectParameters:
     fps: int = 30
     subject_bounds: SubjectBounds = field(default_factory=SubjectBounds)
     
-    # All 12 effects
+    # All 11 effects
     element_glow: ElementGlowParams = field(default_factory=ElementGlowParams)
     element_scale: ElementScaleParams = field(default_factory=ElementScaleParams)
-    echo_trail: EchoTrailParams = field(default_factory=EchoTrailParams)
     particle_burst: ParticleBurstParams = field(default_factory=ParticleBurstParams)
     energy_trails: EnergyTrailsParams = field(default_factory=EnergyTrailsParams)
     light_flares: LightFlaresParams = field(default_factory=LightFlaresParams)
@@ -496,17 +484,6 @@ def calculate_effect_parameters(
     )
     
     # ========================================================================
-    # ECHO TRAIL
-    # ========================================================================
-    echo_trail = EchoTrailParams(
-        enabled=toggles.echo_trail.enabled,
-        intensity=toggles.echo_trail.intensity,
-        trail_count=3 + int(toggles.echo_trail.intensity * 5),
-        trail_spacing=0.03 + (1 - toggles.echo_trail.intensity) * 0.05,
-        opacity_decay=0.6 + (1 - toggles.echo_trail.intensity) * 0.2
-    )
-    
-    # ========================================================================
     # PARTICLE BURST
     # ========================================================================
     burst_triggers = []
@@ -712,7 +689,6 @@ def calculate_effect_parameters(
         subject_bounds=bounds,
         element_glow=element_glow,
         element_scale=element_scale,
-        echo_trail=echo_trail,
         particle_burst=particle_burst,
         energy_trails=energy_trails,
         light_flares=light_flares,
@@ -773,16 +749,6 @@ def get_effect_value_at_time(
         values["element_scale"] = current_scale
     else:
         values["element_scale"] = 1.0
-    
-    # ========================================================================
-    # ECHO TRAIL
-    # ========================================================================
-    echo = effect_params.echo_trail
-    values["echo_trail_enabled"] = echo.enabled
-    values["echo_trail_count"] = echo.trail_count if echo.enabled else 0
-    values["echo_trail_spacing"] = echo.trail_spacing
-    values["echo_trail_decay"] = echo.opacity_decay
-    values["echo_trail_intensity"] = echo.intensity if echo.enabled else 0
     
     # ========================================================================
     # PARTICLE BURST
@@ -1047,7 +1013,6 @@ def legacy_settings_to_toggles(
     
     # Map motion intensity to movement-related effects
     toggles.element_scale = EffectToggle(motion_intensity > 0.2, motion_intensity)
-    toggles.echo_trail = EffectToggle(motion_intensity > 0.5, motion_intensity * 0.7)
     toggles.ripple_wave = EffectToggle(motion_intensity > 0.6, motion_intensity * 0.6)
     
     # Map beat reactivity to beat-triggered effects

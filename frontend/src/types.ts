@@ -34,7 +34,6 @@ export interface EffectToggles {
   // Element effects
   element_glow: EffectToggle;
   element_scale: EffectToggle;
-  echo_trail: EffectToggle;
   
   // Particle effects
   particle_burst: EffectToggle;
@@ -55,7 +54,6 @@ export interface EffectToggles {
 export const DEFAULT_EFFECT_TOGGLES: EffectToggles = {
   element_glow: { enabled: true, intensity: 0.5, trigger_source: 'beats' },
   element_scale: { enabled: true, intensity: 0.3, trigger_source: 'beats' },
-  echo_trail: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
   particle_burst: { enabled: true, intensity: 0.5, trigger_source: 'beats' },
   energy_trails: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
   light_flares: { enabled: false, intensity: 0.3, trigger_source: 'beats' },
@@ -81,7 +79,6 @@ export const EFFECT_METADATA: EffectMeta[] = [
   // Element effects
   { key: 'element_glow', name: 'Glow Pulse', description: 'Subject emits pulsating light', category: 'element', supportsTriggerSource: true },
   { key: 'element_scale', name: 'Scale Pulse', description: 'Subject grows/shrinks on beats', category: 'element', supportsTriggerSource: true },
-  { key: 'echo_trail', name: 'Echo Trail', description: 'Ghostly afterimage effect', category: 'element' },
   
   // Particle effects
   { key: 'particle_burst', name: 'Particle Burst', description: 'Particles explode on beats', category: 'particle', supportsTriggerSource: true },

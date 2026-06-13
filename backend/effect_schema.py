@@ -11,7 +11,6 @@ GLITCH_TRIGGER_SOURCES = ("onsets", "beats", "full", "low", "medium", "high")
 EFFECT_KEYS = (
     "element_glow",
     "element_scale",
-    "echo_trail",
     "particle_burst",
     "energy_trails",
     "light_flares",
@@ -42,7 +41,6 @@ DEFAULT_TRIGGER_BY_EFFECT["glitch"] = "onsets"
 EFFECT_DESCRIPTIONS: Dict[str, str] = {
     "element_glow": "Subject emits pulsating light (light sources, faces, focal points)",
     "element_scale": "Subject grows/shrinks with audio (subtle, adds life)",
-    "echo_trail": "Afterimage effect (motion, dreamy)",
     "particle_burst": "Particles explode from subject (energetic, celebratory)",
     "energy_trails": "Glowing lines orbit subject (mystical, flowing)",
     "light_flares": "Lens flare from glow points (cinematic, dramatic)",
@@ -108,7 +106,6 @@ def build_example_json() -> str:
     "ripple_wave": {"enabled": true, "intensity": 0.6, "trigger_source": "low"},
     "glitch": {"enabled": true, "intensity": 0.4, "trigger_source": "onsets"},
     "background_dim": {"enabled": true, "intensity": 0.4, "radius": 0.35},
-    "echo_trail": {"enabled": false, "intensity": 0.4},
     "element_glow": {"enabled": true, "intensity": 0.7, "trigger_source": "beats"},
     "element_scale": {"enabled": true, "intensity": 0.3, "trigger_source": "beats"},
     "particle_burst": {"enabled": true, "intensity": 0.6, "trigger_source": "beats"},

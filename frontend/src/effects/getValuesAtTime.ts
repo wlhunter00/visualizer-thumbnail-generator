@@ -44,13 +44,6 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
     values.element_scale = 1.0;
   }
 
-  const echo = effectParams.echo_trail;
-  values.echo_trail_enabled = echo.enabled;
-  values.echo_trail_count = echo.enabled ? echo.trail_count : 0;
-  values.echo_trail_spacing = echo.trail_spacing;
-  values.echo_trail_decay = echo.opacity_decay;
-  values.echo_trail_intensity = echo.enabled ? echo.intensity : 0;
-
   const burst = effectParams.particle_burst;
   if (burst.enabled) {
     const activeBursts: Record<string, number>[] = [];

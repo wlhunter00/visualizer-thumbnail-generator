@@ -158,14 +158,29 @@ export default function WaveformSelector({
       }
     };
 
-    const handleMouseUp = () => setIsDragging(null);
+    const handleMouseUp = (e: MouseEvent) => {
+      if (!didDrag && isDragging === 'region' && audioUrl && isAudioReady) {
+        const percent = getMousePercent(e);
+        const clickTime = percentToTime(percent);
+        if (clickTime >= startTime && clickTime <= endTime) {
+          if (sharedAudio) {
+            void sharedAudio.seekTo(clickTime, true);
+          } else if (audioRef.current) {
+            audioRef.current.currentTime = clickTime;
+            setLocalTime(clickTime);
+            audioRef.current.play().then(() => setLocalPlaying(true)).catch(() => setLocalPlaying(false));
+          }
+        }
+      }
+      setIsDragging(null);
+    };
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, dragStartX, dragStartValues, startTime, endTime, duration, getMousePercent, percentToTime, onRegionChange, pausePreview]);
+  }, [isDragging, dragStartX, dragStartValues, startTime, endTime, duration, getMousePercent, percentToTime, onRegionChange, pausePreview, audioUrl, isAudioReady, sharedAudio]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

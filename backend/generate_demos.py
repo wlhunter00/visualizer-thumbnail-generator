@@ -84,13 +84,6 @@ SINGLE_EFFECTS = [
         explanation="Makes your subject pulse larger on each beat, creating a breathing or pumping effect. Stronger beats cause bigger scale changes, syncing the visual impact directly to the music's energy."
     ),
     EffectInfo(
-        key="echo_trail",
-        name="Echo Trail",
-        description="Ghostly afterimage effect",
-        category="element",
-        explanation="Creates ghostly afterimages that trail behind your subject, producing a motion blur or 'speed lines' effect even on static images. Great for adding a sense of movement and energy."
-    ),
-    EffectInfo(
         key="particle_burst",
         name="Particle Burst",
         description="Particles explode on beats",
@@ -196,8 +189,8 @@ PRESETS = [
         name="Dreamy Ambient",
         description="Soft glow with ethereal trails",
         category="mood",
-        explanation="A floaty, otherworldly aesthetic for ambient, new age, or meditation music. Echo trails create a sense of movement while the glow adds warmth.",
-        effects={"element_glow": 0.6, "echo_trail": 0.7, "background_dim": 0.4, "vignette_pulse": 0.3, "ripple_wave": 0.3}
+        explanation="A floaty, otherworldly aesthetic for ambient, new age, or meditation music. Energy trails create a sense of movement while the glow adds warmth.",
+        effects={"element_glow": 0.6, "energy_trails": 0.7, "background_dim": 0.4, "vignette_pulse": 0.3, "ripple_wave": 0.3}
     ),
     PresetInfo(
         key="preset_club_rave",
@@ -229,7 +222,7 @@ PRESETS = [
         description="Ripples, trails, and swirling energy",
         category="mood",
         explanation="Mind-bending visuals with distortion waves and hypnotic motion. Ideal for psytrance, experimental, or trippy electronic music.",
-        effects={"ripple_wave": 0.9, "energy_trails": 0.8, "echo_trail": 0.7, "element_glow": 0.5, "glitch": 0.3}
+        effects={"ripple_wave": 0.9, "energy_trails": 0.8, "element_scale": 0.5, "element_glow": 0.5, "glitch": 0.3}
     ),
     PresetInfo(
         key="preset_gentle_pop",
@@ -255,7 +248,7 @@ PRESETS = [
         description="Scale, trails, and ripples",
         category="combo",
         explanation="Everything moves and pulses. Creates a dynamic, breathing composition where nothing stays still. Great for energetic tracks.",
-        effects={"element_scale": 0.8, "echo_trail": 0.7, "ripple_wave": 0.8, "energy_trails": 0.5}
+        effects={"element_scale": 0.8, "ripple_wave": 0.8, "energy_trails": 0.7}
     ),
     PresetInfo(
         key="preset_particle_party",
@@ -268,10 +261,10 @@ PRESETS = [
     PresetInfo(
         key="preset_distortion_mix",
         name="Distortion Mix",
-        description="Glitch, ripple, and echo combined",
+        description="Glitch and ripple combined",
         category="combo",
-        explanation="Reality breaks down with layered distortion effects. The image glitches, ripples, and trails create an unstable, chaotic feel.",
-        effects={"glitch": 0.8, "ripple_wave": 0.7, "echo_trail": 0.6, "vignette_pulse": 0.4}
+        explanation="Reality breaks down with layered distortion effects. The image glitches and ripples create an unstable, chaotic feel.",
+        effects={"glitch": 0.8, "ripple_wave": 0.7, "film_grain": 0.4, "vignette_pulse": 0.4}
     ),
     PresetInfo(
         key="preset_vintage_complete",
@@ -306,7 +299,7 @@ PRESETS = [
         category="intensity",
         explanation="Absolute sensory overload. Every effect cranked up for maximum visual impact. Use sparingly - best for drops, breakdowns, or experimental content.",
         effects={
-            "element_glow": 0.9, "element_scale": 0.8, "echo_trail": 0.6,
+            "element_glow": 0.9, "element_scale": 0.8,
             "particle_burst": 1.0, "energy_trails": 0.8, "light_flares": 0.7,
             "glitch": 0.6, "ripple_wave": 0.5, "strobe_flash": 0.5, "vignette_pulse": 0.7, "background_dim": 0.5
         }
@@ -345,7 +338,7 @@ PRESETS = [
         description="Rippling, glowing depths",
         category="theme",
         explanation="Evokes being submerged with gentle ripples and ethereal glow. Perfect for dreamy, aquatic, or introspective moods.",
-        effects={"ripple_wave": 0.8, "element_glow": 0.5, "background_dim": 0.4, "vignette_pulse": 0.4, "echo_trail": 0.3}
+        effects={"ripple_wave": 0.8, "element_glow": 0.5, "background_dim": 0.4, "vignette_pulse": 0.4, "energy_trails": 0.3}
     ),
     PresetInfo(
         key="preset_electric_storm",
@@ -361,7 +354,7 @@ PRESETS = [
         description="Dreamy blur with gentle glow",
         category="theme",
         explanation="Everything feels slightly out of focus in the best way. Romantic, nostalgic, and intimate. Great for ballads and love songs.",
-        effects={"background_dim": 0.6, "element_glow": 0.5, "vignette_pulse": 0.5, "echo_trail": 0.4}
+        effects={"background_dim": 0.6, "element_glow": 0.5, "vignette_pulse": 0.5, "film_grain": 0.3}
     ),
     PresetInfo(
         key="preset_neon_nights",
@@ -377,7 +370,7 @@ PRESETS = [
         description="Intentionally broken aesthetic",
         category="theme",
         explanation="Embrace the digital artifacts. Glitch art meets music visualization for an experimental, avant-garde look.",
-        effects={"glitch": 0.9, "echo_trail": 0.6, "film_grain": 0.4, "ripple_wave": 0.3}
+        effects={"glitch": 0.9, "film_grain": 0.5, "ripple_wave": 0.3}
     ),
     PresetInfo(
         key="preset_epic_drop",
@@ -417,7 +410,7 @@ def create_single_effect_toggles(effect_key: str) -> EffectToggles:
     
     # Disable all effects first
     for attr_name in [
-        "element_glow", "element_scale", "echo_trail",
+        "element_glow", "element_scale",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
@@ -436,7 +429,7 @@ def create_preset_toggles(effects_dict: dict) -> EffectToggles:
     
     # Disable all effects first
     for attr_name in [
-        "element_glow", "element_scale", "echo_trail",
+        "element_glow", "element_scale",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"

@@ -68,7 +68,6 @@ class EffectSuggestion:
     element_glow: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("element_glow"))
     element_scale: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("element_scale"))
     neon_outline: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("neon_outline"))
-    echo_trail: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("echo_trail"))
     particle_burst: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("particle_burst"))
     energy_trails: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("energy_trails"))
     light_flares: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("light_flares"))

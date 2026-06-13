@@ -95,13 +95,6 @@ export function calculateEffectParams(
       max_scale: 1.0 + toggles.element_scale.intensity * 0.15,
       triggers: scaleTriggers,
     },
-    echo_trail: {
-      enabled: toggles.echo_trail.enabled,
-      intensity: toggles.echo_trail.intensity,
-      trail_count: 3 + Math.floor(toggles.echo_trail.intensity * 5),
-      trail_spacing: 0.03 + (1 - toggles.echo_trail.intensity) * 0.05,
-      opacity_decay: 0.6 + (1 - toggles.echo_trail.intensity) * 0.2,
-    },
     particle_burst: {
       enabled: toggles.particle_burst.enabled,
       intensity: toggles.particle_burst.intensity,

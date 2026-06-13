@@ -102,13 +102,12 @@ Your 3 slider settings control how audio features map to visual effects:
 | Beat Reactivity | How tightly effects sync to detected beats |
 | Energy Level | Overall mood - calm to energetic |
 
-### Available Effects (13 Total)
+### Available Effects (12 Total)
 
 **Element Effects:**
 - **Element Glow** - Pulsating light from your subject on beats
 - **Scale Pulse** - Subject grows/shrinks on each beat
 - **Neon Outline** - Glowing edge around subject (80s/cyberpunk aesthetic)
-- **Echo Trail** - Ghostly afterimages creating motion blur
 
 **Particle Effects:**
 - **Particle Burst** - Particles explode outward on strong beats
