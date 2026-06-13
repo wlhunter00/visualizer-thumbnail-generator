@@ -392,6 +392,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
       // Get resolution scale from selected resolution
       const selectedRes = RENDER_RESOLUTIONS.find(r => r.value === resolution);
       const resolutionScale = selectedRes?.scale || 1.0;
+      const exportQuality = selectedRes?.exportQuality || 'medium';
 
       await syncSessionSettings(sessionId, {
         start_time: settings.start_time,
@@ -406,6 +407,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
         aspect_ratio: settings.aspect_ratio,
         aspect_ratios: exportAspectRatios,
         effect_toggles: effectToggles,
+        quality: exportQuality,
       });
       
       // Poll for export completion

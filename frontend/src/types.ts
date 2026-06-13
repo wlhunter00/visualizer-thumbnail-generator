@@ -270,13 +270,14 @@ export interface RenderResolution {
   label: string;
   description: string;
   scale: number; // Multiplier for base dimensions
+  exportQuality: 'low' | 'medium' | 'high';
 }
 
 export const RENDER_RESOLUTIONS: RenderResolution[] = [
-  { value: '720p', label: '720p', description: 'Fast render, small file', scale: 0.67 },
-  { value: '1080p', label: '1080p', description: 'Standard HD quality', scale: 1.0 },
-  { value: '1440p', label: '1440p (2K)', description: 'High quality', scale: 1.33 },
-  { value: '4k', label: '4K', description: 'Maximum quality', scale: 2.0 },
+  { value: '720p', label: '720p', description: 'Fast render, small file', scale: 0.67, exportQuality: 'medium' },
+  { value: '1080p', label: '1080p', description: 'Standard HD quality', scale: 1.0, exportQuality: 'medium' },
+  { value: '1440p', label: '1440p (2K)', description: 'High quality', scale: 1.33, exportQuality: 'medium' },
+  { value: '4k', label: '4K', description: 'Maximum quality', scale: 2.0, exportQuality: 'high' },
 ];
 
 // ============================================================================

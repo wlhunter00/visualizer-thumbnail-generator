@@ -198,6 +198,7 @@ export async function exportVideo(
   resolutionScale?: number,
   settings?: Pick<GenerateSettings, 'start_time' | 'end_time' | 'aspect_ratio' | 'effect_toggles'> & {
     aspect_ratios?: string[];
+    quality?: 'low' | 'medium' | 'high';
   }
 ): Promise<{ message: string; session_id: string; aspect_ratios?: string[] }> {
   const res = await fetch(`${API_BASE}/export`, {
@@ -206,6 +207,7 @@ export async function exportVideo(
     body: JSON.stringify({
       session_id: sessionId,
       resolution_scale: resolutionScale,
+      quality: settings?.quality,
       start_time: settings?.start_time,
       end_time: settings?.end_time,
       aspect_ratio: settings?.aspect_ratio,

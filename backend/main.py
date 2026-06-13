@@ -8,6 +8,7 @@ import os
 import uuid
 import shutil
 import time
+import json
 import asyncio
 import threading
 from pathlib import Path
@@ -22,7 +23,7 @@ from pydantic import BaseModel
 
 from audio_analysis import analyze_audio, get_waveform_data, get_audio_duration, AudioFeatures
 from effect_engine import (
-    EffectToggles, EffectToggle, ImageContext, SubjectBounds, GlowPoint,
+    EffectToggles, EffectToggle, EffectParameters, ImageContext, SubjectBounds, GlowPoint,
     calculate_effect_parameters, toggles_from_dict, toggles_to_dict, image_context_from_dict,
     legacy_settings_to_toggles
 )
@@ -61,6 +62,7 @@ if DEMOS_DIR.exists() and any(DEMOS_DIR.iterdir()):
 # In-memory session storage with lock for thread safety
 sessions: Dict[str, SessionData] = {}
 session_lock = threading.Lock()
+effect_params_cache: Dict[str, EffectParameters] = {}
 
 # Session expiration settings - extended to 24 hours so sessions don't expire mid-work
 SESSION_EXPIRY_SECONDS = 3600 * 24  # 24 hours
@@ -159,6 +161,9 @@ class SessionData(BaseModel):
     audio_analysis_cache: Optional[Dict[str, Any]] = None
     audio_analysis_cache_key: Optional[str] = None
 
+    # Cached effect parameters (keyed by region + toggles + image analysis)
+    effect_params_cache_key: Optional[str] = None
+
     # Multi-aspect export tracking
     export_aspect_ratios: List[str] = []
     export_completed_ratios: List[str] = []
@@ -223,7 +228,7 @@ class UpdateEffectPresetRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     session_id: str
-    quality: str = "high"
+    quality: str = "medium"
     resolution_scale: Optional[float] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
@@ -531,6 +536,112 @@ def audio_features_to_dict(features: AudioFeatures) -> Dict[str, Any]:
     }
 
 
+def _list_to_envelope(data: list) -> list:
+    """Convert serialized envelope lists back to (time, value) tuples."""
+    return [(float(t), float(v)) for t, v in data]
+
+
+def dict_to_audio_features(data: Dict[str, Any]) -> AudioFeatures:
+    """Deserialize AudioFeatures from the live preview API cache."""
+    return AudioFeatures(
+        duration=float(data["duration"]),
+        sample_rate=22050,
+        tempo=float(data["tempo"]),
+        beat_times=list(data["beat_times"]),
+        beat_strengths=list(data["beat_strengths"]),
+        onset_times=list(data["onset_times"]),
+        onset_strengths=list(data["onset_strengths"]),
+        energy_envelope=_list_to_envelope(data["energy_envelope"]),
+        bass_energy=[],
+        mid_energy=[],
+        high_energy=[],
+        low_freq_energy=_list_to_envelope(data["low_freq_energy"]),
+        mid_freq_energy=_list_to_envelope(data["mid_freq_energy"]),
+        high_freq_energy=_list_to_envelope(data["high_freq_energy"]),
+        onset_density=float(data.get("onset_density", 0.0)),
+        average_bass=float(data.get("average_bass", 0.0)),
+        average_mid=float(data.get("average_mid", 0.0)),
+        average_high=float(data.get("average_high", 0.0)),
+        dynamic_range=float(data.get("dynamic_range", 0.0)),
+        beat_strength_variance=float(data.get("beat_strength_variance", 0.0)),
+        average_energy=float(data.get("average_energy", 0.0)),
+    )
+
+
+def _audio_region_cache_key(start: float, end: Optional[float]) -> str:
+    return f"{start}:{end or 30.0}"
+
+
+def _effect_params_cache_key(
+    start: float,
+    end: Optional[float],
+    toggles: Optional[Dict[str, Any]],
+    image_analysis: Optional[Dict[str, Any]],
+) -> str:
+    return (
+        f"{_audio_region_cache_key(start, end)}:"
+        f"{json.dumps(toggles or {}, sort_keys=True)}:"
+        f"{json.dumps(image_analysis or {}, sort_keys=True)}"
+    )
+
+
+def get_session_audio_features(
+    session_id: str,
+    audio_path: str,
+    start: float,
+    end_time: Optional[float],
+) -> tuple[AudioFeatures, bool]:
+    """Return audio features, reusing session cache when the region matches."""
+    cache_key = _audio_region_cache_key(start, end_time)
+    duration = (end_time or 30.0) - start
+
+    with session_lock:
+        session = sessions.get(session_id)
+        if (
+            session is not None
+            and session.audio_analysis_cache is not None
+            and session.audio_analysis_cache_key == cache_key
+        ):
+            return dict_to_audio_features(session.audio_analysis_cache), True
+
+    features = analyze_audio(audio_path, start_time=start, duration=duration)
+    result = audio_features_to_dict(features)
+
+    with session_lock:
+        if session_id in sessions:
+            sessions[session_id].audio_analysis_cache = result
+            sessions[session_id].audio_analysis_cache_key = cache_key
+
+    return features, False
+
+
+def get_session_effect_parameters(
+    session_id: str,
+    features: AudioFeatures,
+    toggles: EffectToggles,
+    image_context: Optional[ImageContext],
+    cache_key: str,
+) -> tuple[EffectParameters, bool]:
+    """Return effect parameters, reusing session cache when inputs match."""
+    with session_lock:
+        session = sessions.get(session_id)
+        if (
+            session is not None
+            and session.effect_params_cache_key == cache_key
+            and session_id in effect_params_cache
+        ):
+            return effect_params_cache[session_id], True
+
+    params = calculate_effect_parameters(features, toggles, image_context)
+
+    with session_lock:
+        if session_id in sessions:
+            sessions[session_id].effect_params_cache_key = cache_key
+            effect_params_cache[session_id] = params
+
+    return params, False
+
+
 def _apply_session_settings(session: SessionData, settings: SessionSettingsRequest) -> bool:
     """Apply settings to session. Returns True if region changed (cache invalid)."""
     region_changed = (
@@ -542,9 +653,13 @@ def _apply_session_settings(session: SessionData, settings: SessionSettingsReque
     session.aspect_ratio = settings.aspect_ratio
     if settings.effect_toggles is not None:
         session.effect_toggles = settings.effect_toggles
+        session.effect_params_cache_key = None
+        effect_params_cache.pop(session.session_id, None)
     if region_changed:
         session.audio_analysis_cache = None
         session.audio_analysis_cache_key = None
+        session.effect_params_cache_key = None
+        effect_params_cache.pop(session.session_id, None)
     session.last_accessed = time.time()
     return region_changed
 
@@ -578,7 +693,7 @@ async def get_audio_analysis(session_id: str):
 
         start = session.start_time
         end = session.end_time or 30.0
-        cache_key = f"{start}:{end}"
+        cache_key = _audio_region_cache_key(start, session.end_time)
 
         if (
             session.audio_analysis_cache is not None
@@ -588,18 +703,15 @@ async def get_audio_analysis(session_id: str):
             return session.audio_analysis_cache
 
         audio_path = session.audio_path
+        end_time = session.end_time
 
-    duration = end - start
-    features = analyze_audio(audio_path, start_time=start, duration=duration)
-    result = audio_features_to_dict(features)
+    features, _ = get_session_audio_features(session_id, audio_path, start, end_time)
 
     with session_lock:
         if session_id in sessions:
-            sessions[session_id].audio_analysis_cache = result
-            sessions[session_id].audio_analysis_cache_key = cache_key
             sessions[session_id].last_accessed = time.time()
 
-    return result
+    return audio_features_to_dict(features)
 
 
 # ============================================================================
@@ -1313,9 +1425,17 @@ def export_video_task(
             energy_level = session.energy_level
             particle_sprite_path = session.particle_sprite_path
         
-        # Analyze audio once (outside lock - this is slow)
+        # Analyze audio once (reuse live-preview cache when possible)
         duration = (end_time or 30.0) - start
-        features = analyze_audio(audio_path, start_time=start, duration=duration)
+        analysis_start = time.perf_counter()
+        features, audio_cached = get_session_audio_features(
+            session_id, audio_path, start, end_time
+        )
+        analysis_elapsed = time.perf_counter() - analysis_start
+        print(
+            f"[export] audio analysis: {analysis_elapsed:.1f}s "
+            f"({'cache hit' if audio_cached else 'computed'})"
+        )
         
         # Get toggles
         if session_effect_toggles:
@@ -1332,7 +1452,16 @@ def export_video_task(
         if session_image_analysis:
             image_context = image_context_from_dict(session_image_analysis)
         
-        effect_params = calculate_effect_parameters(features, toggles, image_context)
+        params_cache_key = _effect_params_cache_key(
+            start, end_time, session_effect_toggles, session_image_analysis
+        )
+        effect_params, params_cached = get_session_effect_parameters(
+            session_id, features, toggles, image_context, params_cache_key
+        )
+        print(
+            f"[export] effect parameters: "
+            f"{'cache hit' if params_cached else 'computed'}"
+        )
         
         output_dir = OUTPUT_DIR / session_id
         output_dir.mkdir(exist_ok=True)
@@ -1422,14 +1551,24 @@ def export_video_task(
 
 def _apply_export_settings(session: SessionData, request: ExportRequest) -> None:
     """Apply optional settings from export request to session."""
+    region_changed = False
     if request.start_time is not None:
+        region_changed = region_changed or session.start_time != request.start_time
         session.start_time = request.start_time
     if request.end_time is not None:
+        region_changed = region_changed or session.end_time != request.end_time
         session.end_time = request.end_time
     if request.aspect_ratio is not None:
         session.aspect_ratio = request.aspect_ratio
     if request.effect_toggles is not None:
         session.effect_toggles = request.effect_toggles
+        session.effect_params_cache_key = None
+        effect_params_cache.pop(session.session_id, None)
+    if region_changed:
+        session.audio_analysis_cache = None
+        session.audio_analysis_cache_key = None
+        session.effect_params_cache_key = None
+        effect_params_cache.pop(session.session_id, None)
     if request.resolution_scale is not None:
         session.resolution_scale = request.resolution_scale
     session.last_accessed = time.time()

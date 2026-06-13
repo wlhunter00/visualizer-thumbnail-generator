@@ -7,7 +7,7 @@ import os
 import math
 import random
 import subprocess
-import tempfile
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -228,32 +228,82 @@ def render_video(
     # Initialize systems
     particle_system = ParticleSystem()
     previous_bursts = set()  # Track which bursts we've already spawned
-    
-    with tempfile.TemporaryDirectory() as temp_dir:
-        frame_pattern = os.path.join(temp_dir, "frame_%06d.png")
-        
+
+    bounds_dict = {
+        "x": effect_params.subject_bounds.x,
+        "y": effect_params.subject_bounds.y,
+        "w": effect_params.subject_bounds.w,
+        "h": effect_params.subject_bounds.h,
+        "center_x": effect_params.subject_bounds.center_x,
+        "center_y": effect_params.subject_bounds.center_y,
+    }
+
+    # Precompute static background dim (parameters are constant for the whole clip)
+    background_dim_base = base_image
+    bg_dim = effect_params.background_dim
+    if bg_dim.enabled:
+        background_dim_base = apply_background_dim(
+            base_image,
+            bounds_dict,
+            bg_dim.dim_amount,
+            bg_dim.blur_amount,
+            bg_dim.focus_radius,
+            width,
+            height,
+        )
+
+    vignette_dist_sq = build_vignette_dist_sq(width, height)
+
+    if render_settings.preview:
+        crf = 28
+        preset = "ultrafast"
+    else:
+        crf = {"low": 28, "medium": 23, "high": 18}.get(render_settings.quality, 23)
+        preset = "medium"
+
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "pipe:0",
+        "-ss", str(audio_start),
+        "-t", str(duration),
+        "-i", audio_path,
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-shortest",
+        output_path,
+    ]
+
+    render_start = time.perf_counter()
+    ffmpeg_process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
         for frame_num in range(total_frames):
-            time = frame_num / fps
+            time_sec = frame_num / fps
             dt = 1.0 / fps
             
             # Get effect values at this time
-            effects = get_effect_value_at_time(effect_params, time)
-            bounds = effects.get("subject_bounds", {})
+            effects = get_effect_value_at_time(effect_params, time_sec)
+            bounds = effects.get("subject_bounds", bounds_dict)
             
-            # Start with base image
-            frame = base_image.copy()
-            
-            # ================================================================
-            # LAYER 1: BACKGROUND WITH DIM AND BLUR
-            # ================================================================
-            if effects.get("background_dim_enabled", False):
-                frame = apply_background_dim(
-                    frame, bounds, 
-                    effects.get("background_dim_amount", 0),
-                    effects.get("background_blur", 0),
-                    effects.get("background_focus_radius", 0.5),
-                    width, height
-                )
+            # Start from precomputed background dim when enabled
+            frame = (
+                background_dim_base.copy()
+                if bg_dim.enabled
+                else base_image.copy()
+            )
             
             # ================================================================
             # LAYER 2: RIPPLE WAVE DISTORTION
@@ -307,14 +357,14 @@ def render_video(
                         size_range=burst_params.get("size_range", (3, 12)),
                         speed=burst_params.get("speed", 200),
                         lifetime=burst_params.get("lifetime", 1.0),
-                        time=time,
+                        time=time_sec,
                         width=width,
                         height=height
                     )
             
             # Update and draw particles
-            particle_system.update(time, dt)
-            frame = particle_system.draw(frame, time)
+            particle_system.update(time_sec, dt)
+            frame = particle_system.draw(frame, time_sec)
             
             # Clean up old burst IDs
             if len(previous_bursts) > 100:
@@ -349,7 +399,7 @@ def render_video(
             # ================================================================
             vignette_strength = effects.get("vignette_strength", 0)
             if vignette_strength > 0.01:
-                frame = apply_vignette(frame, vignette_strength, width, height)
+                frame = apply_vignette(frame, vignette_strength, vignette_dist_sq)
             
             # ================================================================
             # LAYER 11: FILM GRAIN
@@ -387,50 +437,39 @@ def render_video(
                     height,
                 )
             
-            # Convert to RGB and save
-            frame = frame.convert("RGB")
-            frame_path = frame_pattern % frame_num
-            frame.save(frame_path, "PNG")
+            if ffmpeg_process.stdin is not None:
+                ffmpeg_process.stdin.write(frame.convert("RGB").tobytes())
             
             if progress_callback:
                 progress_callback(frame_num / total_frames * 0.8)
-        
-        # Combine frames with audio using FFmpeg
-        if progress_callback:
-            progress_callback(0.85)
-        
-        if render_settings.preview:
-            crf = 28
-            preset = "ultrafast"
-        else:
-            crf = {"low": 28, "medium": 23, "high": 18}.get(render_settings.quality, 23)
-            preset = "slow"
-        
-        cmd = [
-            "ffmpeg", "-y",
-            "-framerate", str(fps),
-            "-i", frame_pattern,
-            "-ss", str(audio_start),
-            "-t", str(duration),
-            "-i", audio_path,
-            "-c:v", "libx264",
-            "-preset", preset,
-            "-crf", str(crf),
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-shortest",
-            output_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "Unknown FFmpeg error"
-            raise RuntimeError(f"FFmpeg failed (exit code {result.returncode}): {error_msg}")
-        
-        if progress_callback:
-            progress_callback(1.0)
+    finally:
+        if ffmpeg_process.stdin is not None:
+            ffmpeg_process.stdin.close()
+
+    frame_elapsed = time.perf_counter() - render_start
+
+    if progress_callback:
+        progress_callback(0.85)
+
+    encode_start = time.perf_counter()
+    _, stderr = ffmpeg_process.communicate()
+    encode_elapsed = time.perf_counter() - encode_start
+
+    if ffmpeg_process.returncode != 0:
+        error_msg = stderr.decode("utf-8", errors="replace") if stderr else "Unknown FFmpeg error"
+        raise RuntimeError(
+            f"FFmpeg failed (exit code {ffmpeg_process.returncode}): {error_msg}"
+        )
+
+    total_elapsed = time.perf_counter() - render_start
+    print(
+        f"[render_video] {total_frames} frames @ {width}x{height}: "
+        f"frames={frame_elapsed:.1f}s, encode={encode_elapsed:.1f}s, "
+        f"total={total_elapsed:.1f}s"
+    )
+    
+    if progress_callback:
+        progress_callback(1.0)
     
     return output_path
 
@@ -895,36 +934,32 @@ def apply_strobe_flash(
     return Image.alpha_composite(image, flash)
 
 
+def build_vignette_dist_sq(width: int, height: int) -> np.ndarray:
+    """Precompute squared normalized distance from center for vignette masking."""
+    cx, cy = width // 2, height // 2
+    max_dist = math.sqrt(cx * cx + cy * cy)
+    y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
+    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
+    return (dist / max_dist) ** 2
+
+
 def apply_vignette(
     image: Image.Image,
     strength: float,
-    width: int, height: int
+    dist_sq: np.ndarray,
 ) -> Image.Image:
-    """Apply vignette effect (darkened edges) using vectorized NumPy operations."""
+    """Apply vignette effect (darkened edges) using a precomputed distance field."""
     if strength < 0.01:
         return image
-    
-    cx, cy = width // 2, height // 2
-    max_dist = math.sqrt(cx * cx + cy * cy)
-    
-    # Create coordinate grids using NumPy
-    y_coords, x_coords = np.mgrid[0:height, 0:width].astype(np.float32)
-    
-    # Calculate normalized distance from center (vectorized)
-    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
-    normalized_dist = dist / max_dist
-    
-    # Calculate vignette values (vectorized)
-    vignette = 1 - (normalized_dist ** 2) * strength
+
+    vignette = 1 - dist_sq * strength
     vignette = np.clip(vignette, 0, 1)
-    
-    # Convert to mask image
+
     mask_array = (vignette * 255).astype(np.uint8)
     mask = Image.fromarray(mask_array, mode="L")
-    
-    # Apply vignette
+
     darkened = image.copy()
     enhancer = ImageEnhance.Brightness(darkened)
     darkened = enhancer.enhance(0.3)
-    
+
     return Image.composite(image, darkened, mask)
