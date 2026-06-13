@@ -142,6 +142,21 @@ export interface AudioMetrics {
   average_energy: number;
 }
 
+export type EnergyEnvelope = [number, number][];
+
+export interface AudioFeatures extends AudioMetrics {
+  duration: number;
+  beat_count: number;
+  beat_times: number[];
+  beat_strengths: number[];
+  onset_times: number[];
+  onset_strengths: number[];
+  energy_envelope: EnergyEnvelope;
+  low_freq_energy: EnergyEnvelope;
+  mid_freq_energy: EnergyEnvelope;
+  high_freq_energy: EnergyEnvelope;
+}
+
 // ============================================================================
 // Session Types
 // ============================================================================
@@ -186,6 +201,13 @@ export interface Playbook {
     mood: string | null;
     colors: string[];
   };
+  // Legacy fields used by BrandPlaybook
+  mood?: string;
+  genre_fit?: string[];
+  attributes?: {
+    motion: string;
+    reactivity: string;
+  };
 }
 
 // ============================================================================
@@ -210,7 +232,7 @@ export interface GenerateSettings {
   energy_level?: number;
 }
 
-export type Step = 1 | 2 | 3 | 4;
+export type Step = 1 | 2 | 3;
 
 export const ASPECT_RATIOS = [
   { value: '9:16', label: 'Vertical (9:16)', description: 'TikTok, Reels, Shorts' },

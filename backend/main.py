@@ -155,6 +155,10 @@ class SessionData(BaseModel):
     transform_status: str = "idle"  # idle, transforming, complete, error
     transform_preset: Optional[str] = None  # Which preset was used
 
+    # Cached audio analysis for live preview (keyed by start/end region)
+    audio_analysis_cache: Optional[Dict[str, Any]] = None
+    audio_analysis_cache_key: Optional[str] = None
+
 
 class EffectToggleModel(BaseModel):
     enabled: bool = False
@@ -196,10 +200,21 @@ class GenerateRequest(BaseModel):
     energy_level: Optional[int] = None
 
 
+class SessionSettingsRequest(BaseModel):
+    start_time: float = 0.0
+    end_time: Optional[float] = None
+    aspect_ratio: str = "9:16"
+    effect_toggles: Optional[Dict[str, Any]] = None
+
+
 class ExportRequest(BaseModel):
     session_id: str
     quality: str = "high"
     resolution_scale: Optional[float] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    aspect_ratio: Optional[str] = None
+    effect_toggles: Optional[Dict[str, Any]] = None
 
 
 class AutoSuggestRequest(BaseModel):
@@ -430,36 +445,104 @@ async def stream_audio(session_id: str, request: Request):
     )
 
 
-@app.get("/audio/analysis/{session_id}")
-async def get_audio_analysis(session_id: str):
-    """Get full audio analysis for the selected region."""
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    if not session.audio_path:
-        raise HTTPException(status_code=400, detail="No audio uploaded")
-    
-    start = session.start_time
-    duration = (session.end_time or 30.0) - start
-    
-    features = analyze_audio(session.audio_path, start_time=start, duration=duration)
-    
+def _envelope_to_list(envelope: list) -> list:
+    """Convert (time, value) tuples to JSON-serializable lists."""
+    return [[float(t), float(v)] for t, v in envelope]
+
+
+def audio_features_to_dict(features: AudioFeatures) -> Dict[str, Any]:
+    """Serialize AudioFeatures for the live preview API."""
     return {
-        "tempo": features.tempo,
+        "tempo": float(features.tempo),
         "duration": features.duration,
         "beat_count": len(features.beat_times),
         "beat_times": features.beat_times,
         "beat_strengths": features.beat_strengths,
-        # New metrics for AI interpretation
+        "onset_times": features.onset_times,
+        "onset_strengths": features.onset_strengths,
+        "energy_envelope": _envelope_to_list(features.energy_envelope),
+        "low_freq_energy": _envelope_to_list(features.low_freq_energy),
+        "mid_freq_energy": _envelope_to_list(features.mid_freq_energy),
+        "high_freq_energy": _envelope_to_list(features.high_freq_energy),
         "onset_density": features.onset_density,
         "average_bass": features.average_bass,
         "average_mid": features.average_mid,
         "average_high": features.average_high,
         "dynamic_range": features.dynamic_range,
         "beat_strength_variance": features.beat_strength_variance,
-        "average_energy": features.average_energy
+        "average_energy": features.average_energy,
     }
+
+
+def _apply_session_settings(session: SessionData, settings: SessionSettingsRequest) -> bool:
+    """Apply settings to session. Returns True if region changed (cache invalid)."""
+    region_changed = (
+        session.start_time != settings.start_time
+        or session.end_time != settings.end_time
+    )
+    session.start_time = settings.start_time
+    session.end_time = settings.end_time
+    session.aspect_ratio = settings.aspect_ratio
+    if settings.effect_toggles is not None:
+        session.effect_toggles = settings.effect_toggles
+    if region_changed:
+        session.audio_analysis_cache = None
+        session.audio_analysis_cache_key = None
+    session.last_accessed = time.time()
+    return region_changed
+
+
+@app.post("/session/settings/{session_id}")
+async def sync_session_settings(session_id: str, settings: SessionSettingsRequest):
+    """Sync frontend settings (region, aspect ratio, toggles) to session."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    with session_lock:
+        session = sessions[session_id]
+        region_changed = _apply_session_settings(session, settings)
+
+    return {
+        "message": "Settings synced",
+        "region_changed": region_changed,
+    }
+
+
+@app.get("/audio/analysis/{session_id}")
+async def get_audio_analysis(session_id: str):
+    """Get full audio analysis for the selected region."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    with session_lock:
+        session = sessions[session_id]
+        if not session.audio_path:
+            raise HTTPException(status_code=400, detail="No audio uploaded")
+
+        start = session.start_time
+        end = session.end_time or 30.0
+        cache_key = f"{start}:{end}"
+
+        if (
+            session.audio_analysis_cache is not None
+            and session.audio_analysis_cache_key == cache_key
+        ):
+            session.last_accessed = time.time()
+            return session.audio_analysis_cache
+
+        audio_path = session.audio_path
+
+    duration = end - start
+    features = analyze_audio(audio_path, start_time=start, duration=duration)
+    result = audio_features_to_dict(features)
+
+    with session_lock:
+        if session_id in sessions:
+            sessions[session_id].audio_analysis_cache = result
+            sessions[session_id].audio_analysis_cache_key = cache_key
+            sessions[session_id].last_accessed = time.time()
+
+    return result
 
 
 # ============================================================================
@@ -1174,30 +1257,47 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
         traceback.print_exc()
 
 
+def _apply_export_settings(session: SessionData, request: ExportRequest) -> None:
+    """Apply optional settings from export request to session."""
+    if request.start_time is not None:
+        session.start_time = request.start_time
+    if request.end_time is not None:
+        session.end_time = request.end_time
+    if request.aspect_ratio is not None:
+        session.aspect_ratio = request.aspect_ratio
+    if request.effect_toggles is not None:
+        session.effect_toggles = request.effect_toggles
+    if request.resolution_scale is not None:
+        session.resolution_scale = request.resolution_scale
+    session.last_accessed = time.time()
+
+
 @app.post("/export")
 async def export_video(request: ExportRequest, background_tasks: BackgroundTasks):
-    """Export final high-quality video."""
+    """Export final high-quality video (no prior generate required)."""
     if request.session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[request.session_id]
-    
-    if not session.output_path:
-        raise HTTPException(status_code=400, detail="No video to export. Generate first.")
-    
-    if not session.image_path or not session.audio_path:
-        raise HTTPException(status_code=400, detail="Missing image or audio files.")
-    
+
+    with session_lock:
+        session = sessions[request.session_id]
+
+        if not session.image_path or not session.audio_path:
+            raise HTTPException(status_code=400, detail="Missing image or audio files.")
+
+        _apply_export_settings(session, request)
+        session.render_status = "exporting"
+        session.render_progress = 0.0
+
     background_tasks.add_task(
-        export_video_task, 
-        request.session_id, 
+        export_video_task,
+        request.session_id,
         request.quality,
-        request.resolution_scale
+        request.resolution_scale,
     )
-    
+
     return {
         "message": "Export started",
-        "session_id": request.session_id
+        "session_id": request.session_id,
     }
 
 

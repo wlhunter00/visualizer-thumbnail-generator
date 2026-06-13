@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { Play, Pause, Volume2, Loader2 } from 'lucide-react';
+import { useOptionalAudioPreview } from '../context/AudioPreviewContext';
 
 interface WaveformSelectorProps {
   waveformData: [number, number][];
@@ -20,262 +21,165 @@ export default function WaveformSelector({
 }: WaveformSelectorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const sharedAudio = useOptionalAudioPreview();
+
   const [isDragging, setIsDragging] = useState<'start' | 'end' | 'region' | null>(null);
   const [dragStartX, setDragStartX] = useState(0);
   const [dragStartValues, setDragStartValues] = useState({ start: 0, end: 0 });
-  
-  // Audio playback state
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(startTime);
-  const [isAudioReady, setIsAudioReady] = useState(false);
+
+  // Local fallback when not inside AudioPreviewProvider
+  const [localPlaying, setLocalPlaying] = useState(false);
+  const [localTime, setLocalTime] = useState(startTime);
+  const [localReady, setLocalReady] = useState(false);
   const animationFrameRef = useRef<number | null>(null);
-  
-  // Handle audio element loading and events
+
+  const isPlaying = sharedAudio?.isPlaying ?? localPlaying;
+  const currentTime = sharedAudio?.absoluteTime ?? localTime;
+  const isAudioReady = sharedAudio?.isAudioReady ?? localReady;
+
   useEffect(() => {
+    if (sharedAudio || !audioRef.current || !audioUrl) return;
     const audio = audioRef.current;
-    if (!audio || !audioUrl) return;
-    
-    // Reset ready state when URL changes
-    setIsAudioReady(false);
-    
-    const handleCanPlay = () => {
-      setIsAudioReady(true);
-    };
-    
-    const handleLoadedData = () => {
-      setIsAudioReady(true);
-    };
-    
-    const handleError = () => {
-      setIsAudioReady(false);
-    };
-    
-    const handleEnded = () => {
-      setIsPlaying(false);
-      setCurrentTime(startTime);
-    };
-    
-    audio.addEventListener('canplay', handleCanPlay);
-    audio.addEventListener('loadeddata', handleLoadedData);
-    audio.addEventListener('error', handleError);
-    audio.addEventListener('ended', handleEnded);
-    
-    // Force load the audio
+    setLocalReady(false);
+    const onReady = () => setLocalReady(true);
+    const onError = () => setLocalReady(false);
+    audio.addEventListener('canplay', onReady);
+    audio.addEventListener('loadeddata', onReady);
+    audio.addEventListener('error', onError);
     audio.load();
-    
-    // If already ready
-    if (audio.readyState >= 3) {
-      setIsAudioReady(true);
-    }
-    
     return () => {
-      audio.removeEventListener('canplay', handleCanPlay);
-      audio.removeEventListener('loadeddata', handleLoadedData);
-      audio.removeEventListener('error', handleError);
-      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('canplay', onReady);
+      audio.removeEventListener('loadeddata', onReady);
+      audio.removeEventListener('error', onError);
     };
-  }, [audioUrl, startTime]);
-  
-  // Audio playback controls
+  }, [audioUrl, sharedAudio]);
+
   const playPreview = useCallback(async () => {
+    if (sharedAudio) {
+      await sharedAudio.play();
+      return;
+    }
     if (!audioRef.current || !audioUrl) return;
-    
     try {
       audioRef.current.currentTime = startTime;
       await audioRef.current.play();
-      setIsPlaying(true);
-      setCurrentTime(startTime);
+      setLocalPlaying(true);
+      setLocalTime(startTime);
     } catch {
-      setIsPlaying(false);
+      setLocalPlaying(false);
     }
-  }, [audioUrl, startTime]);
-  
+  }, [sharedAudio, audioUrl, startTime]);
+
   const pausePreview = useCallback(() => {
-    if (!audioRef.current) return;
-    
-    audioRef.current.pause();
-    setIsPlaying(false);
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
+    if (sharedAudio) {
+      sharedAudio.pause();
+      return;
     }
-  }, []);
-  
+    audioRef.current?.pause();
+    setLocalPlaying(false);
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+  }, [sharedAudio]);
+
   const togglePlayback = useCallback(() => {
-    if (isPlaying) {
-      pausePreview();
-    } else {
-      playPreview();
-    }
+    if (isPlaying) pausePreview();
+    else playPreview();
   }, [isPlaying, playPreview, pausePreview]);
-  
-  // Update playhead position during playback
+
   useEffect(() => {
-    if (!isPlaying || !audioRef.current) return;
-    
+    if (sharedAudio || !localPlaying || !audioRef.current) return;
     const updatePlayhead = () => {
       if (!audioRef.current) return;
-      
       const time = audioRef.current.currentTime;
-      setCurrentTime(time);
-      
-      // Stop at end of selected region
+      setLocalTime(time);
       if (time >= endTime) {
         audioRef.current.pause();
-        setIsPlaying(false);
-        setCurrentTime(startTime);
+        setLocalPlaying(false);
+        setLocalTime(startTime);
         return;
       }
-      
       animationFrameRef.current = requestAnimationFrame(updatePlayhead);
     };
-    
     animationFrameRef.current = requestAnimationFrame(updatePlayhead);
-    
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, endTime, startTime]);
-  
-  // Reset playhead when region changes
+  }, [localPlaying, endTime, startTime, sharedAudio]);
+
   useEffect(() => {
-    if (!isPlaying) {
-      setCurrentTime(startTime);
-    }
-  }, [startTime, isPlaying]);
-  
-  
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, []);
-  
-  const timeToPercent = useCallback((time: number) => {
-    return (time / duration) * 100;
-  }, [duration]);
-  
-  const percentToTime = useCallback((percent: number) => {
-    return (percent / 100) * duration;
-  }, [duration]);
-  
+    if (!isPlaying && !sharedAudio) setLocalTime(startTime);
+  }, [startTime, isPlaying, sharedAudio]);
+
+  const timeToPercent = useCallback((time: number) => (time / duration) * 100, [duration]);
+  const percentToTime = useCallback((percent: number) => (percent / 100) * duration, [duration]);
+
   const getMousePercent = useCallback((e: MouseEvent | React.MouseEvent) => {
     if (!containerRef.current) return 0;
     const rect = containerRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     return Math.max(0, Math.min(100, (x / rect.width) * 100));
   }, []);
-  
+
   const handleMouseDown = useCallback((e: React.MouseEvent, handle: 'start' | 'end' | 'region') => {
     e.preventDefault();
     e.stopPropagation();
-    
     setIsDragging(handle);
     setDragStartX(e.clientX);
     setDragStartValues({ start: startTime, end: endTime });
   }, [startTime, endTime]);
-  
-  
+
   useEffect(() => {
     if (!isDragging) return;
-    
     let didDrag = false;
-    
+
     const handleMouseMove = (e: MouseEvent) => {
       const dx = Math.abs(e.clientX - dragStartX);
-      
-      // Only count as drag if moved more than 3 pixels
       if (dx > 3) {
         if (!didDrag) {
           didDrag = true;
-          // Pause playback when actually starting to drag
-          if (isPlaying && audioRef.current) {
-            audioRef.current.pause();
-            setIsPlaying(false);
-          }
+          pausePreview();
         }
-        
         const percent = getMousePercent(e);
         const time = percentToTime(percent);
-        
         if (isDragging === 'start') {
-          const newStart = Math.max(0, Math.min(time, endTime - 1));
-          onRegionChange(newStart, endTime);
+          onRegionChange(Math.max(0, Math.min(time, endTime - 1)), endTime);
         } else if (isDragging === 'end') {
-          const newEnd = Math.min(duration, Math.max(time, startTime + 1));
-          onRegionChange(startTime, newEnd);
+          onRegionChange(startTime, Math.min(duration, Math.max(time, startTime + 1)));
         } else if (isDragging === 'region') {
           if (!containerRef.current) return;
           const rect = containerRef.current.getBoundingClientRect();
-          const percentDelta = ((e.clientX - dragStartX) / rect.width) * 100;
-          const timeDelta = (percentDelta / 100) * duration;
-          
+          const timeDelta = ((e.clientX - dragStartX) / rect.width) * duration;
           const regionDuration = dragStartValues.end - dragStartValues.start;
           let newStart = dragStartValues.start + timeDelta;
           let newEnd = dragStartValues.end + timeDelta;
-          
-          // Clamp to bounds
-          if (newStart < 0) {
-            newStart = 0;
-            newEnd = regionDuration;
-          }
-          if (newEnd > duration) {
-            newEnd = duration;
-            newStart = duration - regionDuration;
-          }
-          
+          if (newStart < 0) { newStart = 0; newEnd = regionDuration; }
+          if (newEnd > duration) { newEnd = duration; newStart = duration - regionDuration; }
           onRegionChange(newStart, newEnd);
         }
       }
     };
-    
-    const handleMouseUp = (e: MouseEvent) => {
-      // If didn't drag (was a click), play from that position
-      if (!didDrag && isDragging === 'region' && audioRef.current && audioUrl && isAudioReady) {
-        const percent = getMousePercent(e);
-        const clickTime = percentToTime(percent);
-        
-        if (clickTime >= startTime && clickTime <= endTime) {
-          audioRef.current.currentTime = clickTime;
-          setCurrentTime(clickTime);
-          audioRef.current.play().then(() => {
-            setIsPlaying(true);
-          }).catch(() => {
-            setIsPlaying(false);
-          });
-        }
-      }
-      
-      setIsDragging(null);
-    };
-    
+
+    const handleMouseUp = () => setIsDragging(null);
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-    
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, dragStartX, dragStartValues, startTime, endTime, duration, getMousePercent, percentToTime, onRegionChange, isPlaying, audioUrl, isAudioReady]);
-  
+  }, [isDragging, dragStartX, dragStartValues, startTime, endTime, duration, getMousePercent, percentToTime, onRegionChange, pausePreview]);
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
-  
+
   const startPercent = timeToPercent(startTime);
   const endPercent = timeToPercent(endTime);
-  
-  // Render waveform bars
+  const playheadPercent = timeToPercent(currentTime);
+
   const renderWaveform = () => {
     const numBars = 100;
     const step = Math.max(1, Math.floor(waveformData.length / numBars));
-    
     return (
       <div className="absolute inset-0 flex items-center justify-around px-1">
         {Array.from({ length: numBars }).map((_, i) => {
@@ -284,13 +188,10 @@ export default function WaveformSelector({
           const height = Math.max(8, amplitude * 100);
           const percent = (i / numBars) * 100;
           const isInRegion = percent >= startPercent && percent <= endPercent;
-          
           return (
             <div
               key={i}
-              className={`w-0.5 rounded-full transition-colors ${
-                isInRegion ? 'bg-accent' : 'bg-surface-300'
-              }`}
+              className={`w-0.5 rounded-full transition-colors ${isInRegion ? 'bg-accent' : 'bg-surface-300'}`}
               style={{ height: `${height}%` }}
             />
           );
@@ -298,62 +199,30 @@ export default function WaveformSelector({
       </div>
     );
   };
-  
-  const playheadPercent = timeToPercent(currentTime);
-  
+
   return (
     <div className="space-y-3">
-      {/* Hidden audio element */}
-      {audioUrl && (
-        <audio 
-          ref={audioRef} 
-          src={audioUrl} 
-          preload="auto"
-        />
+      {!sharedAudio && audioUrl && (
+        <audio ref={audioRef} src={audioUrl} preload="auto" className="hidden" />
       )}
-      
-      <div
-        ref={containerRef}
-        className="waveform-container h-24 relative cursor-pointer select-none"
-      >
-        {/* Waveform visualization */}
+
+      <div ref={containerRef} className="waveform-container h-24 relative cursor-pointer select-none">
         {renderWaveform()}
-        
-        {/* Inactive regions (dimmed) */}
-        <div
-          className="absolute inset-y-0 left-0 bg-white/70 pointer-events-none"
-          style={{ width: `${startPercent}%` }}
-        />
-        <div
-          className="absolute inset-y-0 right-0 bg-white/70 pointer-events-none"
-          style={{ width: `${100 - endPercent}%` }}
-        />
-        
-        {/* Selected region overlay */}
+        <div className="absolute inset-y-0 left-0 bg-white/70 pointer-events-none" style={{ width: `${startPercent}%` }} />
+        <div className="absolute inset-y-0 right-0 bg-white/70 pointer-events-none" style={{ width: `${100 - endPercent}%` }} />
         <div
           className="absolute inset-y-0 bg-accent/10 border-y-2 border-accent/30 cursor-move"
-          style={{
-            left: `${startPercent}%`,
-            width: `${endPercent - startPercent}%`,
-          }}
+          style={{ left: `${startPercent}%`, width: `${endPercent - startPercent}%` }}
           onMouseDown={(e) => handleMouseDown(e, 'region')}
         />
-        
-        {/* Playhead indicator */}
         {audioUrl && (
           <div
-            className="absolute inset-y-0 w-0.5 bg-red-500 pointer-events-none z-10 transition-none"
-            style={{ 
-              left: `${playheadPercent}%`,
-              boxShadow: '0 0 4px rgba(239, 68, 68, 0.5)'
-            }}
+            className="absolute inset-y-0 w-0.5 bg-red-500 pointer-events-none z-10"
+            style={{ left: `${playheadPercent}%`, boxShadow: '0 0 4px rgba(239, 68, 68, 0.5)' }}
           >
-            {/* Playhead top marker */}
             <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-red-500 rounded-full" />
           </div>
         )}
-        
-        {/* Start handle */}
         <div
           className="absolute inset-y-0 w-3 bg-accent rounded-l cursor-ew-resize flex items-center justify-center hover:bg-accent-dark transition-colors"
           style={{ left: `calc(${startPercent}% - 6px)` }}
@@ -361,8 +230,6 @@ export default function WaveformSelector({
         >
           <div className="w-0.5 h-8 bg-white/50 rounded-full" />
         </div>
-        
-        {/* End handle */}
         <div
           className="absolute inset-y-0 w-3 bg-accent rounded-r cursor-ew-resize flex items-center justify-center hover:bg-accent-dark transition-colors"
           style={{ left: `calc(${endPercent}% - 6px)` }}
@@ -371,37 +238,24 @@ export default function WaveformSelector({
           <div className="w-0.5 h-8 bg-white/50 rounded-full" />
         </div>
       </div>
-      
-      {/* Controls row: Time labels + Play button */}
+
       <div className="flex items-center justify-between">
         <span className="text-xs text-surface-500">{formatTime(startTime)}</span>
-        
-        {/* Play/Pause button */}
         {audioUrl && (
           <button
             onClick={togglePlayback}
             disabled={!isAudioReady}
-            className="flex items-center gap-2 px-4 py-2 bg-accent hover:bg-accent-dark text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-2 bg-surface-100 hover:bg-surface-200 text-surface-700 rounded-lg transition-colors disabled:opacity-50"
           >
             {!isAudioReady ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-sm font-medium">Loading...</span>
-              </>
+              <><Loader2 className="w-4 h-4 animate-spin" /><span className="text-sm">Loading...</span></>
             ) : isPlaying ? (
-              <>
-                <Pause className="w-4 h-4" />
-                <span className="text-sm font-medium">Pause</span>
-              </>
+              <><Pause className="w-4 h-4" /><span className="text-sm">Pause</span></>
             ) : (
-              <>
-                <Play className="w-4 h-4" />
-                <span className="text-sm font-medium">Preview</span>
-              </>
+              <><Play className="w-4 h-4" /><span className="text-sm">Preview Audio</span></>
             )}
           </button>
         )}
-        
         <div className="flex items-center gap-3">
           <span className="text-xs text-accent font-medium flex items-center gap-1">
             <Volume2 className="w-3 h-3" />
@@ -413,4 +267,3 @@ export default function WaveformSelector({
     </div>
   );
 }
-

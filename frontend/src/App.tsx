@@ -1,12 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Step, 
   GenerateSettings, 
-  Playbook, 
   ASPECT_RATIOS, 
   EffectToggles, 
   DEFAULT_EFFECT_TOGGLES,
   ImageAnalysis,
+  AudioFeatures,
   RENDER_RESOLUTIONS
 } from './types';
 import { 
@@ -14,23 +14,25 @@ import {
   uploadImage, 
   uploadAudio, 
   getWaveform, 
-  generateVideo, 
   getGenerationStatus, 
   exportVideo, 
-  getPreviewUrl, 
   getDownloadUrl,
   analyzeImage,
-  autoSuggest
+  autoSuggest,
+  getAudioAnalysis,
+  syncSessionSettings,
+  generateParticles,
 } from './api';
 import StepIndicator from './components/StepIndicator';
 import UploadStep from './components/UploadStep';
 import WaveformSelector from './components/WaveformSelector';
 import EffectControls from './components/EffectControls';
-import VideoPreview from './components/VideoPreview';
+import LivePreviewCanvas from './components/LivePreviewCanvas';
 import RenderSettings from './components/RenderSettings';
 import DemoPage from './DemoPage';
 import TransformPage from './TransformPage';
-import { Music, Image as ImageIcon, Sparkles, Download, Loader2, PlayCircle, Settings2, Wand2 } from 'lucide-react';
+import { AudioPreviewProvider } from './context/AudioPreviewContext';
+import { Music, Image as ImageIcon, Sparkles, Download, Loader2, PlayCircle, Wand2 } from 'lucide-react';
 
 // Parse hash route
 function parseHash(): { page: 'main' | 'demo' | 'transform'; effectKey?: string; sessionId?: string } {
@@ -86,16 +88,16 @@ function MainApp({ initialSessionId }: MainAppProps) {
     effect_toggles: DEFAULT_EFFECT_TOGGLES,
   });
   
-  // Generation state
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [videoReady, setVideoReady] = useState(false);
-  const [playbook, setPlaybook] = useState<Playbook | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Live preview state
+  const [audioAnalysis, setAudioAnalysis] = useState<AudioFeatures | null>(null);
+  const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
+  const syncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRegionRef = useRef<string>('');
   
   // Export state
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
   
   // Initialize session (skip if we have one from transform flow)
   useEffect(() => {
@@ -200,7 +202,6 @@ function MainApp({ initialSessionId }: MainAppProps) {
   // Handle aspect ratio change
   const handleAspectRatioChange = useCallback((value: string) => {
     setSettings(s => ({ ...s, aspect_ratio: value }));
-    setVideoReady(false);
   }, []);
 
   // Handle resolution change
@@ -212,7 +213,6 @@ function MainApp({ initialSessionId }: MainAppProps) {
   const handleEffectTogglesChange = useCallback((toggles: EffectToggles) => {
     setEffectToggles(toggles);
     setSettings(s => ({ ...s, effect_toggles: toggles }));
-    setVideoReady(false);
   }, []);
   
   // NEW: Handle auto-suggest
@@ -254,6 +254,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
       analyzeImage(sessionId)
         .then(result => {
           setImageAnalysis(result.analysis);
+          generateParticles(sessionId).catch(() => {});
         })
         .catch(err => {
           // Non-fatal - continue without analysis
@@ -286,8 +287,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
         aspect_ratio: '9:16',
         effect_toggles: DEFAULT_EFFECT_TOGGLES,
       });
-      setVideoReady(false);
-      setPlaybook(null);
+      setAudioAnalysis(null);
       setCurrentStep(1);
       setError('Your session expired. Please re-upload your files.');
     } catch (e) {
@@ -295,55 +295,68 @@ function MainApp({ initialSessionId }: MainAppProps) {
     }
   }, []);
 
-  // Generate video
-  const handleGenerate = useCallback(async () => {
-    if (!sessionId) return;
-    
+  const fetchAudioAnalysis = useCallback(async (sid: string) => {
+    setIsLoadingAnalysis(true);
     try {
-      setError(null);
-      setIsGenerating(true);
-      setProgress(0);
-      setVideoReady(false);
-      
-      await generateVideo(sessionId, {
-        ...settings,
-        effect_toggles: effectToggles,
-      });
-      
-      // Poll for completion
-      const pollStatus = async () => {
-        const status = await getGenerationStatus(sessionId);
-        setProgress(status.progress * 100);
-        
-        if (status.status === 'complete') {
-          setIsGenerating(false);
-          setVideoReady(true);
-          setPlaybook(status.playbook);
-          setCurrentStep(4);
-        } else if (status.status === 'error') {
-          setIsGenerating(false);
-          setError('Generation failed. Please try again.');
-        } else {
-          setTimeout(pollStatus, 500);
-        }
-      };
-      
-      pollStatus();
+      const analysis = await getAudioAnalysis(sid);
+      setAudioAnalysis(analysis);
     } catch (err) {
-      setIsGenerating(false);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to generate video';
-      
-      // Check if this is a session/file missing error
-      if (errorMessage.includes('No image uploaded') || 
-          errorMessage.includes('No audio uploaded') ||
-          errorMessage.includes('Session not found')) {
-        // Session is stale, reset everything
-        handleSessionReset();
-      } else {
-        setError(errorMessage);
-      }
+      console.warn('Audio analysis failed:', err);
+    } finally {
+      setIsLoadingAnalysis(false);
     }
-  }, [sessionId, settings, effectToggles, handleSessionReset]);
+  }, []);
+
+  const syncAndMaybeAnalyze = useCallback((
+    sid: string,
+    currentSettings: GenerateSettings,
+    toggles: EffectToggles,
+    regionChanged: boolean
+  ) => {
+    syncSessionSettings(sid, {
+      start_time: currentSettings.start_time,
+      end_time: currentSettings.end_time,
+      aspect_ratio: currentSettings.aspect_ratio,
+      effect_toggles: toggles,
+    }).then(() => {
+      if (regionChanged) fetchAudioAnalysis(sid);
+    }).catch(err => console.warn('Session sync failed:', err));
+  }, [fetchAudioAnalysis]);
+
+  // Sync settings and fetch audio analysis when entering step 3
+  useEffect(() => {
+    if (currentStep !== 3 || !sessionId || !audioFile) return;
+
+    const regionKey = `${settings.start_time}:${settings.end_time}`;
+    lastRegionRef.current = regionKey;
+
+    syncSessionSettings(sessionId, {
+      start_time: settings.start_time,
+      end_time: settings.end_time,
+      aspect_ratio: settings.aspect_ratio,
+      effect_toggles: effectToggles,
+    }).then(() => fetchAudioAnalysis(sessionId)).catch(err => {
+      console.warn('Initial sync failed:', err);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep, sessionId, audioFile]);
+
+  // Debounced sync on settings changes while on step 3
+  useEffect(() => {
+    if (currentStep !== 3 || !sessionId) return;
+
+    if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+    syncDebounceRef.current = setTimeout(() => {
+      const regionKey = `${settings.start_time}:${settings.end_time}`;
+      const regionChanged = lastRegionRef.current !== regionKey;
+      if (regionChanged) lastRegionRef.current = regionKey;
+      syncAndMaybeAnalyze(sessionId, settings, effectToggles, regionChanged);
+    }, 300);
+
+    return () => {
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+    };
+  }, [settings.start_time, settings.end_time, settings.aspect_ratio, effectToggles, currentStep, sessionId, syncAndMaybeAnalyze, settings]);
   
   // Export video
   const handleExport = useCallback(async () => {
@@ -357,8 +370,20 @@ function MainApp({ initialSessionId }: MainAppProps) {
       // Get resolution scale from selected resolution
       const selectedRes = RENDER_RESOLUTIONS.find(r => r.value === resolution);
       const resolutionScale = selectedRes?.scale || 1.0;
-      
-      await exportVideo(sessionId, resolutionScale);
+
+      await syncSessionSettings(sessionId, {
+        start_time: settings.start_time,
+        end_time: settings.end_time,
+        aspect_ratio: settings.aspect_ratio,
+        effect_toggles: effectToggles,
+      });
+
+      await exportVideo(sessionId, resolutionScale, {
+        start_time: settings.start_time,
+        end_time: settings.end_time,
+        aspect_ratio: settings.aspect_ratio,
+        effect_toggles: effectToggles,
+      });
       
       // Poll for export completion
       const pollExportStatus = async () => {
@@ -397,9 +422,9 @@ function MainApp({ initialSessionId }: MainAppProps) {
         setError(errorMessage);
       }
     }
-  }, [sessionId, resolution, handleSessionReset]);
+  }, [sessionId, resolution, settings, effectToggles, handleSessionReset]);
   
-  const canGenerate = imageFile && audioFile && settings.end_time > settings.start_time;
+  const canExport = imageFile && audioFile && settings.end_time > settings.start_time;
   const selectedDuration = settings.end_time - settings.start_time;
   
   return (
@@ -492,290 +517,125 @@ function MainApp({ initialSessionId }: MainAppProps) {
           </div>
         )}
         
-        {/* Step 3: Adjust */}
-        {currentStep === 3 && (
-          <div className="animate-fade-in">
-            <div className="text-center mb-8">
-              <h2 className="font-display text-2xl font-bold text-surface-900 mb-2">
-                Customize Your Effects
-              </h2>
-              <p className="text-surface-500">
-                Select effects and adjust intensities, or let AI suggest settings
-              </p>
-            </div>
-            
-            <div className="grid lg:grid-cols-3 gap-8">
-              {/* Left: Preview & Waveform */}
-              <div className="lg:col-span-2 space-y-6">
-                {/* Image Preview with Analysis Indicator */}
-                {imagePreview && (
-                  <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                    <div className="relative aspect-video bg-surface-100 rounded-xl overflow-hidden flex items-center justify-center">
-                      <img 
-                        src={imagePreview} 
-                        alt="Cover art preview" 
-                        className="max-w-full max-h-full object-contain"
-                      />
-                      {isAnalyzing && (
-                        <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                          <div className="bg-white rounded-lg px-4 py-2 flex items-center gap-2">
-                            <Loader2 className="w-4 h-4 animate-spin text-accent" />
-                            <span className="text-sm text-surface-700">Analyzing image...</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                {/* Waveform */}
-                <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-sm font-medium text-surface-700">Audio Region</span>
-                    <span className="text-sm text-surface-500">
-                      {selectedDuration.toFixed(1)}s selected
-                    </span>
-                  </div>
-                  <WaveformSelector
-                    waveformData={waveformData}
-                    duration={audioDuration}
-                    startTime={settings.start_time}
-                    endTime={settings.end_time}
-                    onRegionChange={handleRegionChange}
-                    audioUrl={audioPreviewUrl || undefined}
-                  />
-                </div>
+        {/* Step 3: Edit & Export */}
+        {currentStep === 3 && sessionId && (
+          <AudioPreviewProvider
+            audioUrl={audioPreviewUrl}
+            startTime={settings.start_time}
+            endTime={settings.end_time}
+          >
+            <div className="animate-fade-in">
+              <div className="text-center mb-8">
+                <h2 className="font-display text-2xl font-bold text-surface-900 mb-2">
+                  Edit & Export
+                </h2>
+                <p className="text-surface-500">
+                  Adjust effects and hit Play to preview instantly — export when ready
+                </p>
               </div>
-              
-              {/* Right: Controls */}
-              <div className="space-y-6">
-                {/* Aspect Ratio */}
-                <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                  <span className="text-sm font-medium text-surface-700 block mb-3">Aspect Ratio</span>
-                  <div className="grid grid-cols-2 gap-2">
-                    {ASPECT_RATIOS.map((ratio) => (
-                      <button
-                        key={ratio.value}
-                        onClick={() => handleAspectRatioChange(ratio.value)}
-                        className={`p-3 rounded-xl text-left transition-all ${
-                          settings.aspect_ratio === ratio.value
-                            ? 'bg-accent text-white'
-                            : 'bg-surface-100 hover:bg-surface-200 text-surface-700'
-                        }`}
-                      >
-                        <div className="text-sm font-medium">{ratio.label}</div>
-                        <div className={`text-xs ${
-                          settings.aspect_ratio === ratio.value ? 'text-white/70' : 'text-surface-500'
-                        }`}>
-                          {ratio.description}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                
-                {/* Effect Controls */}
-                <EffectControls
-                  effectToggles={effectToggles}
-                  onChange={handleEffectTogglesChange}
-                  onAutoSuggest={handleAutoSuggest}
-                  isAutoSuggesting={isAutoSuggesting}
-                  imageAnalysis={imageAnalysis}
-                />
-                
-                {/* Generate Button */}
-                <button
-                  onClick={handleGenerate}
-                  disabled={!canGenerate || isGenerating}
-                  className="w-full py-4 bg-accent text-white font-medium rounded-xl hover:bg-accent-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isGenerating ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      Generating... {Math.round(progress)}%
-                    </span>
-                  ) : (
-                    'Generate Video'
-                  )}
-                </button>
-                
-                {isGenerating && (
-                  <div className="h-2 bg-surface-200 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full progress-bar rounded-full"
-                      style={{ width: `${progress}%` }}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* Step 4: Preview & Export */}
-        {currentStep === 4 && sessionId && (
-          <div className="animate-fade-in">
-            <div className="text-center mb-8">
-              <h2 className="font-display text-2xl font-bold text-surface-900 mb-2">
-                Preview & Export
-              </h2>
-              <p className="text-surface-500">
-                Review your video and make any final adjustments
-              </p>
-            </div>
-            
-            <div className="grid lg:grid-cols-3 gap-8">
-              {/* Video Preview */}
-              <div className="lg:col-span-2 space-y-4">
-                <VideoPreview
-                  videoUrl={getPreviewUrl(sessionId)}
-                  aspectRatio={settings.aspect_ratio}
-                />
-                
-                {/* Timeline Editor */}
-                <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <Music className="w-4 h-4 text-accent" />
-                      <span className="text-sm font-medium text-surface-700">Timeline</span>
-                    </div>
-                    <span className="text-sm text-surface-500">
-                      {(settings.end_time - settings.start_time).toFixed(1)}s selected
-                    </span>
-                  </div>
-                  <WaveformSelector
-                    waveformData={waveformData}
-                    duration={audioDuration}
-                    startTime={settings.start_time}
-                    endTime={settings.end_time}
-                    onRegionChange={handleRegionChange}
-                    audioUrl={audioPreviewUrl || undefined}
-                  />
-                  <p className="text-xs text-surface-400 mt-3">
-                    Drag the handles to adjust the start and end time of your video
-                  </p>
-                </div>
-                
-                {/* Playbook Summary */}
-                {playbook && (
-                  <div className="bg-white rounded-2xl border border-surface-200 p-4">
-                    <h3 className="text-sm font-medium text-surface-700 mb-2">Generation Summary</h3>
-                    <p className="text-sm text-surface-600 mb-3">{playbook.summary}</p>
-                    
-                    {playbook.active_effects && playbook.active_effects.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {playbook.active_effects.map((effect, i) => (
-                          <span 
-                            key={i}
-                            className="text-xs px-2 py-1 bg-accent/10 text-accent rounded-full"
-                          >
-                            {effect}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              
-              {/* Controls & Actions */}
-              <div className="space-y-4">
-                {/* Render Settings - Resolution & Aspect Ratio */}
-                <RenderSettings
-                  aspectRatio={settings.aspect_ratio}
-                  resolution={resolution}
-                  onAspectRatioChange={handleAspectRatioChange}
-                  onResolutionChange={handleResolutionChange}
-                  compact
-                />
-                
-                {/* Effect Controls (Collapsible) */}
-                <details className="group">
-                  <summary className="bg-white rounded-2xl border border-surface-200 p-4 cursor-pointer list-none flex items-center justify-between hover:bg-surface-50 transition-colors">
-                    <div className="flex items-center gap-2">
-                      <Settings2 className="w-4 h-4 text-accent" />
-                      <span className="text-sm font-medium text-surface-700">Effect Settings</span>
-                    </div>
-                    <svg 
-                      className="w-4 h-4 text-surface-400 transition-transform group-open:rotate-180" 
-                      fill="none" 
-                      viewBox="0 0 24 24" 
-                      stroke="currentColor"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </summary>
-                  <div className="mt-2">
-                    <EffectControls
+
+              <div className="grid lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-2 space-y-6">
+                  {imagePreview && (
+                    <LivePreviewCanvas
+                      imageUrl={imagePreview}
+                      aspectRatio={settings.aspect_ratio}
                       effectToggles={effectToggles}
-                      onChange={handleEffectTogglesChange}
-                      onAutoSuggest={handleAutoSuggest}
-                      isAutoSuggesting={isAutoSuggesting}
+                      audioFeatures={audioAnalysis}
                       imageAnalysis={imageAnalysis}
+                      isLoading={isLoadingAnalysis || isAnalyzing}
+                    />
+                  )}
+
+                  <div className="bg-white rounded-2xl border border-surface-200 p-4">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-sm font-medium text-surface-700">Audio Region</span>
+                      <span className="text-sm text-surface-500">
+                        {selectedDuration.toFixed(1)}s selected
+                      </span>
+                    </div>
+                    <WaveformSelector
+                      waveformData={waveformData}
+                      duration={audioDuration}
+                      startTime={settings.start_time}
+                      endTime={settings.end_time}
+                      onRegionChange={handleRegionChange}
+                      audioUrl={audioPreviewUrl || undefined}
                     />
                   </div>
-                </details>
-                
-                {/* Action Buttons */}
-                <div className="space-y-3">
-                  {/* Re-render button - Primary when settings changed */}
+                </div>
+
+                <div className="space-y-6">
+                  <div className="bg-white rounded-2xl border border-surface-200 p-4">
+                    <span className="text-sm font-medium text-surface-700 block mb-3">Aspect Ratio</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {ASPECT_RATIOS.map((ratio) => (
+                        <button
+                          key={ratio.value}
+                          onClick={() => handleAspectRatioChange(ratio.value)}
+                          className={`p-3 rounded-xl text-left transition-all ${
+                            settings.aspect_ratio === ratio.value
+                              ? 'bg-accent text-white'
+                              : 'bg-surface-100 hover:bg-surface-200 text-surface-700'
+                          }`}
+                        >
+                          <div className="text-sm font-medium">{ratio.label}</div>
+                          <div className={`text-xs ${
+                            settings.aspect_ratio === ratio.value ? 'text-white/70' : 'text-surface-500'
+                          }`}>
+                            {ratio.description}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <EffectControls
+                    effectToggles={effectToggles}
+                    onChange={handleEffectTogglesChange}
+                    onAutoSuggest={handleAutoSuggest}
+                    isAutoSuggesting={isAutoSuggesting}
+                    imageAnalysis={imageAnalysis}
+                  />
+
+                  <RenderSettings
+                    aspectRatio={settings.aspect_ratio}
+                    resolution={resolution}
+                    onAspectRatioChange={handleAspectRatioChange}
+                    onResolutionChange={handleResolutionChange}
+                    compact
+                  />
+
                   <button
-                    onClick={handleGenerate}
-                    disabled={isGenerating}
-                    className="w-full py-3 bg-accent text-white font-medium rounded-xl hover:bg-accent-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    onClick={handleExport}
+                    disabled={!canExport || isExporting}
+                    className="w-full py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white font-medium rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20 flex items-center justify-center gap-2"
                   >
-                    {isGenerating ? (
+                    {isExporting ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Re-rendering... {Math.round(progress)}%
+                        Exporting at {resolution}...
                       </>
                     ) : (
-                      'Re-render with Changes'
+                      <>
+                        <Download className="w-4 h-4" />
+                        Export at {resolution}
+                      </>
                     )}
                   </button>
-                  
-                  {isGenerating && (
+
+                  {isExporting && (
                     <div className="h-2 bg-surface-200 rounded-full overflow-hidden">
-                      <div 
+                      <div
                         className="h-full progress-bar rounded-full"
-                        style={{ width: `${progress}%` }}
+                        style={{ width: `${exportProgress}%` }}
                       />
                     </div>
                   )}
-                  
-                  <div className="pt-2 border-t border-surface-100">
-                    <p className="text-xs text-surface-500 mb-3 text-center">
-                      Happy with your preview? Export at full quality:
-                    </p>
-                    
-                    <button
-                      onClick={handleExport}
-                      disabled={isExporting || isGenerating}
-                      className="w-full py-4 bg-gradient-to-r from-violet-500 to-purple-600 text-white font-medium rounded-xl hover:from-violet-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
-                    >
-                      {isExporting ? (
-                        <span className="flex items-center justify-center gap-2">
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Exporting at {resolution}...
-                        </span>
-                      ) : (
-                        `Export at ${resolution}`
-                      )}
-                    </button>
-                  </div>
-                  
-                  <a
-                    href={getPreviewUrl(sessionId)}
-                    download="beat-reactive-preview.mp4"
-                    className="w-full py-3 bg-white border border-surface-200 text-surface-700 font-medium rounded-xl hover:bg-surface-50 transition-colors flex items-center justify-center gap-2"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download Preview
-                  </a>
                 </div>
               </div>
             </div>
-          </div>
+          </AudioPreviewProvider>
         )}
       </main>
       

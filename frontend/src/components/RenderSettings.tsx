@@ -16,7 +16,6 @@ export default function RenderSettings({
   onResolutionChange,
   compact = false,
 }: RenderSettingsProps) {
-  const selectedAspect = ASPECT_RATIOS.find(r => r.value === aspectRatio);
   const selectedResolution = RENDER_RESOLUTIONS.find(r => r.value === resolution);
 
   // Calculate approximate output dimensions for display

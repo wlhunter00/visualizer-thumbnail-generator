@@ -1,0 +1,38 @@
+{
+  "audio_features": {
+    "duration": 10.0,
+    "beat_times": [0.5, 1.0, 1.5, 2.0, 2.5],
+    "beat_strengths": [0.8, 0.6, 0.9, 0.5, 0.7],
+    "onset_times": [0.3, 0.8, 1.3],
+    "onset_strengths": [0.7, 0.5, 0.9],
+    "energy_envelope": [[0.0, 0.2], [0.5, 0.8], [1.0, 0.5]],
+    "low_freq_energy": [[0.0, 0.3], [0.5, 0.9], [1.0, 0.4]],
+    "mid_freq_energy": [[0.0, 0.4], [0.5, 0.6], [1.0, 0.5]],
+    "high_freq_energy": [[0.0, 0.2], [0.5, 0.3], [1.0, 0.2]],
+    "tempo": 120.0,
+    "onset_density": 2.0,
+    "average_bass": 0.5,
+    "average_mid": 0.5,
+    "average_high": 0.3,
+    "dynamic_range": 0.4,
+    "beat_strength_variance": 0.1,
+    "average_energy": 0.5,
+    "beat_count": 5
+  },
+  "sample_times": [0.0, 0.5, 1.0, 5.0],
+  "toggles": {
+    "element_glow": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
+    "element_scale": { "enabled": true, "intensity": 0.3, "trigger_source": "beats" },
+    "neon_outline": { "enabled": false, "intensity": 0.5 },
+    "echo_trail": { "enabled": false, "intensity": 0.4 },
+    "particle_burst": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
+    "energy_trails": { "enabled": false, "intensity": 0.4 },
+    "light_flares": { "enabled": false, "intensity": 0.3 },
+    "glitch": { "enabled": false, "intensity": 0.3, "trigger_source": "onsets" },
+    "ripple_wave": { "enabled": false, "intensity": 0.4 },
+    "film_grain": { "enabled": false, "intensity": 0.2 },
+    "strobe_flash": { "enabled": false, "intensity": 0.3 },
+    "vignette_pulse": { "enabled": true, "intensity": 0.4, "trigger_source": "beats" },
+    "background_dim": { "enabled": true, "intensity": 0.3 }
+  }
+}

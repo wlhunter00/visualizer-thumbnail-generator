@@ -26,7 +26,7 @@ export default function BrandPlaybook({ playbook }: BrandPlaybookProps) {
             <span className="text-xs">Motion</span>
           </div>
           <span className="text-sm font-medium text-surface-700 capitalize">
-            {playbook.attributes.motion}
+            {playbook.attributes?.motion ?? '—'}
           </span>
         </div>
         
@@ -36,7 +36,7 @@ export default function BrandPlaybook({ playbook }: BrandPlaybookProps) {
             <span className="text-xs">Reactivity</span>
           </div>
           <span className="text-sm font-medium text-surface-700 capitalize">
-            {playbook.attributes.reactivity}
+            {playbook.attributes?.reactivity ?? '—'}
           </span>
         </div>
       </div>
@@ -44,7 +44,7 @@ export default function BrandPlaybook({ playbook }: BrandPlaybookProps) {
       {/* Mood */}
       <div className="bg-accent/5 rounded-xl p-3">
         <span className="text-xs text-accent font-medium">Mood</span>
-        <p className="text-sm text-surface-700 mt-1 capitalize">{playbook.mood}</p>
+        <p className="text-sm text-surface-700 mt-1 capitalize">{playbook.mood ?? playbook.image_info?.mood ?? '—'}</p>
       </div>
       
       {/* Genre Fit */}
@@ -54,7 +54,7 @@ export default function BrandPlaybook({ playbook }: BrandPlaybookProps) {
           <span className="text-xs">Works well with</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {playbook.genre_fit.map((genre) => (
+          {(playbook.genre_fit ?? []).map((genre: string) => (
             <span
               key={genre}
               className="px-2.5 py-1 bg-surface-100 text-surface-600 text-xs rounded-full"

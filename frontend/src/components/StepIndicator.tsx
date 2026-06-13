@@ -8,8 +8,7 @@ interface StepIndicatorProps {
 const STEPS = [
   { num: 1, label: 'Upload Image' },
   { num: 2, label: 'Upload Audio' },
-  { num: 3, label: 'Adjust' },
-  { num: 4, label: 'Export' },
+  { num: 3, label: 'Edit & Export' },
 ] as const;
 
 export default function StepIndicator({ currentStep }: StepIndicatorProps) {

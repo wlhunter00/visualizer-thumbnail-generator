@@ -6,7 +6,8 @@ Create professional, beat-reactive music videos from your cover art and audio in
 
 ## Features
 
-- **Simple 4-Step Flow**: Upload image → Upload audio → Adjust → Export
+- **Simple 3-Step Flow**: Upload image → Upload audio → Edit & Export
+- **Instant Live Preview**: Adjust effect knobs and hit Play to see beat-reactive animation in the browser — no waiting for re-renders
 - **13 Customizable Effects**: Glow, scale pulse, neon outline, particles, glitch, and more
 - **AI-Powered Analysis**: Automatic image analysis and effect suggestions
 - **Visual Waveform Selection**: Drag to select exactly which part of your track to visualize
@@ -79,6 +80,11 @@ npm run dev
 ```
 
 ## How It Works
+
+### Live Preview vs Export
+
+- **Live preview** (step 3): Runs in your browser using a canvas renderer. Adjust effects and press Play for instant feedback. Preview is approximate — great for iterating quickly.
+- **Export**: Server-side PIL + FFmpeg renders the final video at full resolution (720p–4K). Export quality is pixel-accurate and does not require a prior "Generate" step.
 
 ### Audio Analysis
 The backend uses [librosa](https://librosa.org/) to analyze your audio:
@@ -154,7 +160,9 @@ Once generated, visit `http://localhost:5173/#/demo` to view all effects.
 | `/audio/waveform/{session_id}` | GET | Get waveform data |
 | `/analyze-image/{session_id}` | POST | AI image analysis |
 | `/auto-suggest/{session_id}` | POST | Get AI effect suggestions |
-| `/generate` | POST | Start video generation |
+| `/session/settings/{session_id}` | POST | Sync region, aspect ratio, and effect toggles |
+| `/audio/analysis/{session_id}` | GET | Get full audio analysis for live preview |
+| `/generate` | POST | Start video generation (legacy; not used in UI) |
 | `/generate/status/{session_id}` | GET | Check generation progress |
 | `/export` | POST | Export final video |
 | `/download/{session_id}` | GET | Download exported video |
@@ -179,7 +187,9 @@ visualizer-thumbnail-generator/
 │   ├── src/
 │   │   ├── App.tsx          # Main application with routing
 │   │   ├── DemoPage.tsx     # Effects demo page
-│   │   ├── components/      # React components
+│   │   ├── context/         # Shared audio preview provider
+│   │   ├── effects/         # Browser effect engine (params + canvas renderers)
+│   │   ├── components/      # React components (incl. LivePreviewCanvas)
 │   │   ├── api.ts           # Backend API calls
 │   │   └── types.ts         # TypeScript types
 │   └── package.json

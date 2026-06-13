@@ -1,4 +1,4 @@
-import { EffectToggles, ImageAnalysis, AudioMetrics, GenerateSettings } from './types';
+import { EffectToggles, ImageAnalysis, AudioFeatures, AudioMetrics, GenerateSettings } from './types';
 
 const API_BASE = '/api';
 
@@ -58,15 +58,30 @@ export async function getWaveform(sessionId: string): Promise<{ waveform: [numbe
   return res.json();
 }
 
-export async function getAudioAnalysis(sessionId: string): Promise<AudioMetrics & { 
-  tempo: number; 
-  duration: number; 
-  beat_count: number;
-  beat_times: number[];
-  beat_strengths: number[];
-}> {
+export async function getAudioAnalysis(sessionId: string): Promise<AudioFeatures> {
   const res = await fetch(`${API_BASE}/audio/analysis/${sessionId}`);
   if (!res.ok) throw new Error('Failed to get audio analysis');
+  return res.json();
+}
+
+export async function syncSessionSettings(
+  sessionId: string,
+  settings: Pick<GenerateSettings, 'start_time' | 'end_time' | 'aspect_ratio' | 'effect_toggles'>
+): Promise<{ message: string; region_changed: boolean }> {
+  const res = await fetch(`${API_BASE}/session/settings/${sessionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      start_time: settings.start_time,
+      end_time: settings.end_time,
+      aspect_ratio: settings.aspect_ratio,
+      effect_toggles: settings.effect_toggles,
+    }),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || 'Failed to sync session settings');
+  }
   return res.json();
 }
 
@@ -184,19 +199,27 @@ export async function getGenerationStatus(sessionId: string): Promise<{
 // ============================================================================
 
 export async function exportVideo(
-  sessionId: string, 
-  resolutionScale?: number
-): Promise<{ download_url: string }> {
+  sessionId: string,
+  resolutionScale?: number,
+  settings?: Pick<GenerateSettings, 'start_time' | 'end_time' | 'aspect_ratio' | 'effect_toggles'>
+): Promise<{ message: string; session_id: string }> {
   const res = await fetch(`${API_BASE}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
+    body: JSON.stringify({
       session_id: sessionId,
       resolution_scale: resolutionScale,
+      start_time: settings?.start_time,
+      end_time: settings?.end_time,
+      aspect_ratio: settings?.aspect_ratio,
+      effect_toggles: settings?.effect_toggles,
     }),
   });
-  
-  if (!res.ok) throw new Error('Failed to export');
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to export' }));
+    throw new Error(error.detail || 'Failed to export');
+  }
   return res.json();
 }
 
