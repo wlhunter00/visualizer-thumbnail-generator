@@ -73,6 +73,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
   // NEW: Image analysis state
   const [imageAnalysis, setImageAnalysis] = useState<ImageAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [hasAttemptedAnalysis, setHasAttemptedAnalysis] = useState(false);
   const [isAutoSuggesting, setIsAutoSuggesting] = useState(false);
   
   // Settings state - now using effect toggles
@@ -137,6 +138,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
       
       // Reset analysis when new image uploaded
       setImageAnalysis(null);
+      setHasAttemptedAnalysis(false);
       
       // Auto-advance if audio is already uploaded
       if (audioFile) {
@@ -244,9 +246,10 @@ function MainApp({ initialSessionId }: MainAppProps) {
     }
   }, [sessionId, imageAnalysis]);
   
-  // NEW: Analyze image when entering step 3
+  // Analyze image once when entering step 3 (skip retry if it already failed)
   useEffect(() => {
-    if (currentStep === 3 && sessionId && imageFile && !imageAnalysis && !isAnalyzing) {
+    if (currentStep === 3 && sessionId && imageFile && !imageAnalysis && !isAnalyzing && !hasAttemptedAnalysis) {
+      setHasAttemptedAnalysis(true);
       setIsAnalyzing(true);
       analyzeImage(sessionId)
         .then(result => {
@@ -260,7 +263,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
           setIsAnalyzing(false);
         });
     }
-  }, [currentStep, sessionId, imageFile, imageAnalysis, isAnalyzing]);
+  }, [currentStep, sessionId, imageFile, imageAnalysis, isAnalyzing, hasAttemptedAnalysis]);
   
   // Reset session state when files are missing on backend
   const handleSessionReset = useCallback(async () => {
@@ -275,6 +278,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
       setAudioDuration(0);
       setWaveformData([]);
       setImageAnalysis(null);
+      setHasAttemptedAnalysis(false);
       setEffectToggles(DEFAULT_EFFECT_TOGGLES);
       setSettings({
         start_time: 0,
