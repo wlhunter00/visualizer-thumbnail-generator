@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
-from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
+from PIL import Image, ImageFilter, ImageEnhance, ImageDraw, ImageChops
 import numpy as np
 
 from effect_engine import EffectParameters, get_effect_value_at_time
@@ -244,6 +244,7 @@ def render_video(
                     frame, bounds, 
                     effects.get("background_dim_amount", 0),
                     effects.get("background_blur", 0),
+                    effects.get("background_focus_radius", 0.5),
                     width, height
                 )
             
@@ -279,21 +280,7 @@ def render_video(
                 )
             
             # ================================================================
-            # LAYER 5: NEON OUTLINE
-            # ================================================================
-            outline_intensity = effects.get("neon_outline_intensity", 0)
-            if outline_intensity > 0.01:
-                frame = apply_neon_outline(
-                    frame, bounds,
-                    outline_intensity,
-                    effects.get("neon_outline_color", (0, 255, 255)),
-                    effects.get("neon_outline_width", 3),
-                    effects.get("neon_outline_glow", 10),
-                    width, height
-                )
-            
-            # ================================================================
-            # LAYER 6: ECHO TRAIL
+            # LAYER 5: ECHO TRAIL
             # ================================================================
             # Store frame BEFORE applying echo (so we echo clean frames, not echoes of echoes)
             if effects.get("echo_trail_enabled", False):
@@ -373,21 +360,7 @@ def render_video(
                 )
             
             # ================================================================
-            # LAYER 10: GLITCH
-            # ================================================================
-            if effects.get("glitch_active", False):
-                frame = apply_glitch(
-                    frame,
-                    effects.get("glitch_intensity", 0),
-                    effects.get("glitch_chromatic", 0),
-                    effects.get("glitch_rgb_split", 0),
-                    effects.get("glitch_scan_lines", False),
-                    effects.get("glitch_scan_opacity", 0),
-                    effects.get("glitch_slice", False)
-                )
-            
-            # ================================================================
-            # LAYER 11: FILM GRAIN
+            # LAYER 10: FILM GRAIN
             # ================================================================
             if effects.get("film_grain_enabled", False):
                 frame = apply_film_grain(
@@ -397,7 +370,7 @@ def render_video(
                 )
             
             # ================================================================
-            # LAYER 12: STROBE FLASH
+            # LAYER 11: STROBE FLASH
             # ================================================================
             if effects.get("strobe_active", False):
                 frame = apply_strobe_flash(
@@ -407,11 +380,27 @@ def render_video(
                 )
             
             # ================================================================
-            # LAYER 13: VIGNETTE
+            # LAYER 12: VIGNETTE
             # ================================================================
             vignette_strength = effects.get("vignette_strength", 0)
             if vignette_strength > 0.01:
                 frame = apply_vignette(frame, vignette_strength, width, height)
+            
+            # ================================================================
+            # LAYER 13: GLITCH (last — matches preview compositing order)
+            # ================================================================
+            if effects.get("glitch_active", False):
+                frame = apply_glitch(
+                    frame,
+                    effects.get("glitch_intensity", 0),
+                    effects.get("glitch_chromatic", 0),
+                    effects.get("glitch_rgb_split", 0),
+                    effects.get("glitch_scan_lines", False),
+                    effects.get("glitch_scan_opacity", 0),
+                    effects.get("glitch_slice", False),
+                    width,
+                    height,
+                )
             
             # Convert to RGB and save
             frame = frame.convert("RGB")
@@ -496,6 +485,7 @@ def apply_background_dim(
     bounds: Dict[str, float],
     dim_amount: float,
     blur_amount: float,
+    focus_radius: float,
     width: int, height: int
 ) -> Image.Image:
     """Dim and blur the background outside the subject bounds."""
@@ -521,12 +511,17 @@ def apply_background_dim(
     w = int(bounds.get("w", 0.5) * width)
     h = int(bounds.get("h", 0.5) * height)
     
-    # Draw soft ellipse mask
-    padding = int(min(w, h) * 0.2)
-    draw.ellipse([x - padding, y - padding, x + w + padding, y + h + padding], fill=255)
+    min_dim = min(w, h)
+    max_dim = max(w, h)
+    padding = int(min_dim * (0.05 + focus_radius * 0.45))
+    expand = int(max_dim * focus_radius * 0.3)
+    draw.ellipse(
+        [x - padding - expand, y - padding - expand, x + w + padding + expand, y + h + padding + expand],
+        fill=255,
+    )
     
     # Blur the mask for soft edges
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=padding))
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(1, int(padding * (0.8 + focus_radius * 0.4)))))
     
     # Composite: bg where mask is 0, original where mask is 255
     return Image.composite(image, bg, mask)
@@ -703,81 +698,6 @@ def apply_element_glow(
     glow = glow.filter(ImageFilter.GaussianBlur(radius=radius / 3))
     
     return Image.alpha_composite(image, glow)
-
-
-def apply_neon_outline(
-    image: Image.Image,
-    bounds: Dict[str, float],
-    intensity: float,
-    color: Tuple[int, int, int],
-    line_width: float,
-    glow_radius: float,
-    width: int, height: int
-) -> Image.Image:
-    """Draw a neon outline around the subject using the bounding box with smooth contour."""
-    if intensity < 0.01:
-        return image
-    
-    # Get bounds
-    x = int(bounds.get("x", 0.25) * width)
-    y = int(bounds.get("y", 0.25) * height)
-    w = int(bounds.get("w", 0.5) * width)
-    h = int(bounds.get("h", 0.5) * height)
-    
-    # Create overlay for the outline
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    
-    alpha = int(intensity * 255)
-    outline_color = (*color, alpha)
-    
-    # Draw a rounded rectangle that follows the subject bounds more naturally
-    # This looks better than an ellipse while still being clean
-    corner_radius = min(w, h) // 4
-    
-    # Draw the rounded rectangle outline
-    lw = max(2, int(line_width))
-    
-    # PIL doesn't have rounded_rectangle with just outline, so draw it manually
-    # Top edge
-    draw.line([(x + corner_radius, y), (x + w - corner_radius, y)], fill=outline_color, width=lw)
-    # Bottom edge  
-    draw.line([(x + corner_radius, y + h), (x + w - corner_radius, y + h)], fill=outline_color, width=lw)
-    # Left edge
-    draw.line([(x, y + corner_radius), (x, y + h - corner_radius)], fill=outline_color, width=lw)
-    # Right edge
-    draw.line([(x + w, y + corner_radius), (x + w, y + h - corner_radius)], fill=outline_color, width=lw)
-    
-    # Corner arcs
-    draw.arc([x, y, x + corner_radius * 2, y + corner_radius * 2], 180, 270, fill=outline_color, width=lw)
-    draw.arc([x + w - corner_radius * 2, y, x + w, y + corner_radius * 2], 270, 360, fill=outline_color, width=lw)
-    draw.arc([x, y + h - corner_radius * 2, x + corner_radius * 2, y + h], 90, 180, fill=outline_color, width=lw)
-    draw.arc([x + w - corner_radius * 2, y + h - corner_radius * 2, x + w, y + h], 0, 90, fill=outline_color, width=lw)
-    
-    # Create glow by blurring a filled version
-    glow_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow_overlay)
-    
-    glow_alpha = int(intensity * 120)
-    glow_color = (*color, glow_alpha)
-    
-    # Draw slightly thicker lines for glow base
-    glow_lw = lw + int(glow_radius / 2)
-    glow_draw.line([(x + corner_radius, y), (x + w - corner_radius, y)], fill=glow_color, width=glow_lw)
-    glow_draw.line([(x + corner_radius, y + h), (x + w - corner_radius, y + h)], fill=glow_color, width=glow_lw)
-    glow_draw.line([(x, y + corner_radius), (x, y + h - corner_radius)], fill=glow_color, width=glow_lw)
-    glow_draw.line([(x + w, y + corner_radius), (x + w, y + h - corner_radius)], fill=glow_color, width=glow_lw)
-    glow_draw.arc([x, y, x + corner_radius * 2, y + corner_radius * 2], 180, 270, fill=glow_color, width=glow_lw)
-    glow_draw.arc([x + w - corner_radius * 2, y, x + w, y + corner_radius * 2], 270, 360, fill=glow_color, width=glow_lw)
-    glow_draw.arc([x, y + h - corner_radius * 2, x + corner_radius * 2, y + h], 90, 180, fill=glow_color, width=glow_lw)
-    glow_draw.arc([x + w - corner_radius * 2, y + h - corner_radius * 2, x + w, y + h], 0, 90, fill=glow_color, width=glow_lw)
-    
-    # Blur for glow effect
-    glow_overlay = glow_overlay.filter(ImageFilter.GaussianBlur(radius=glow_radius))
-    
-    # Composite: glow underneath, sharp outline on top
-    result = Image.alpha_composite(image, glow_overlay)
-    return Image.alpha_composite(result, overlay)
 
 
 def apply_echo_trail(
@@ -959,6 +879,9 @@ def apply_light_flares(
     return Image.alpha_composite(image, overlay)
 
 
+PREVIEW_REFERENCE_WIDTH = 540
+
+
 def apply_glitch(
     image: Image.Image,
     intensity: float,
@@ -966,53 +889,54 @@ def apply_glitch(
     rgb_split: float,
     scan_lines: bool,
     scan_opacity: float,
-    slice_effect: bool
+    slice_effect: bool,
+    width: int,
+    height: int,
 ) -> Image.Image:
-    """Apply glitch effects."""
+    """Apply glitch effects, scaled to match live preview at any resolution."""
     if intensity < 0.05:
         return image
-    
+
     result = image.copy()
-    width, height = result.size
-    
-    # RGB split / chromatic aberration
-    if chromatic > 0.5 or rgb_split > 0.5:
-        offset = int(max(chromatic, rgb_split) * intensity)
-        if offset > 0:
-            r, g, b = result.convert("RGB").split()
-            
-            r_shifted = Image.new("L", (width, height), 0)
-            r_shifted.paste(r, (-offset, 0))
-            
-            b_shifted = Image.new("L", (width, height), 0)
-            b_shifted.paste(b, (offset, 0))
-            
-            result = Image.merge("RGB", (r_shifted, g, b_shifted))
-            result = result.convert("RGBA")
-    
+    scale = width / PREVIEW_REFERENCE_WIDTH
+    split_px = max(chromatic, rgb_split) * scale
+    offset = int(round(split_px))
+
+    # RGB split via screen/multiply overlays (matches frontend drawGlitch)
+    if offset > 0:
+        shifted_right = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        shifted_right.paste(result, (-offset, 0))
+        screen = ImageChops.screen(result.convert("RGB"), shifted_right.convert("RGB"))
+        result = Image.blend(result, screen.convert("RGBA"), 0.4)
+
+        shifted_left = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        shifted_left.paste(result, (offset, 0))
+        multiplied = ImageChops.multiply(result.convert("RGB"), shifted_left.convert("RGB"))
+        result = Image.blend(result, multiplied.convert("RGBA"), 0.4)
+
+    # Slice displacement (matches frontend: alternating horizontal bands)
+    if slice_effect and split_px > 0:
+        slice_h = max(1, height // 8)
+        for i in range(0, 8, 2):
+            y0 = i * slice_h
+            y1 = min((i + 1) * slice_h, height)
+            displacement = int(round((random.random() - 0.5) * split_px * 4))
+            if displacement != 0:
+                slice_region = result.crop((0, y0, width, y1))
+                result.paste(slice_region, (displacement, y0))
+
     # Scan lines
     if scan_lines and scan_opacity > 0.01:
         overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-        
         alpha = int(scan_opacity * 255)
-        for y in range(0, height, 4):
-            draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha), width=1)
-        
+        line_step = max(2, int(round(4 * scale)))
+        line_height = max(1, int(round(2 * scale)))
+        for y in range(0, height, line_step):
+            draw.rectangle([(0, y), (width, y + line_height - 1)], fill=(0, 0, 0, alpha))
+
         result = Image.alpha_composite(result, overlay)
-    
-    # Slice displacement
-    if slice_effect and intensity > 0.3:
-        num_slices = int(3 + intensity * 5)
-        for _ in range(num_slices):
-            y = random.randint(0, height - 20)
-            slice_height = random.randint(5, 20)
-            displacement = random.randint(-int(20 * intensity), int(20 * intensity))
-            
-            if displacement != 0:
-                slice_region = result.crop((0, y, width, y + slice_height))
-                result.paste(slice_region, (displacement, y))
-    
+
     return result
 
 

@@ -44,24 +44,6 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
     values.element_scale = 1.0;
   }
 
-  const outline = effectParams.neon_outline;
-  if (outline.enabled) {
-    let outlineIntensity = 0.5;
-    for (const [triggerTime, strength] of outline.pulse_triggers) {
-      const dt = time - triggerTime;
-      if (dt >= 0 && dt < 0.25) {
-        const pulse = dt < 0.03 ? dt / 0.03 : 1 - (dt - 0.03) / 0.22;
-        outlineIntensity = Math.max(outlineIntensity, 0.5 + pulse * 0.5 * strength);
-      }
-    }
-    values.neon_outline_intensity = outlineIntensity * outline.intensity;
-    values.neon_outline_color = outline.color;
-    values.neon_outline_width = outline.width;
-    values.neon_outline_glow = outline.glow_radius;
-  } else {
-    values.neon_outline_intensity = 0;
-  }
-
   const echo = effectParams.echo_trail;
   values.echo_trail_enabled = echo.enabled;
   values.echo_trail_count = echo.enabled ? echo.trail_count : 0;
@@ -223,6 +205,7 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
   values.background_dim_enabled = bgDim.enabled;
   values.background_dim_amount = bgDim.enabled ? bgDim.dim_amount : 0;
   values.background_blur = bgDim.enabled ? bgDim.blur_amount : 0;
+  values.background_focus_radius = bgDim.enabled ? bgDim.focus_radius : 0;
 
   values.subject_bounds = effectParams.subject_bounds;
 

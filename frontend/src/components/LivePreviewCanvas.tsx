@@ -106,11 +106,6 @@ export default function LivePreviewCanvas({
     };
   }, [isPlaying, imageLoaded, effectParams, renderFrame]);
 
-  // Reset draw state when toggles change significantly
-  useEffect(() => {
-    resetDrawState(drawStateRef.current);
-  }, [effectToggles]);
-
   // Spacebar handler
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

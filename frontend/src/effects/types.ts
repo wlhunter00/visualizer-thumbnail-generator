@@ -33,15 +33,6 @@ export interface ElementScaleParams {
   triggers: [number, number][];
 }
 
-export interface NeonOutlineParams {
-  enabled: boolean;
-  intensity: number;
-  color: RGB;
-  width: number;
-  glow_radius: number;
-  pulse_triggers: [number, number][];
-}
-
 export interface EchoTrailParams {
   enabled: boolean;
   intensity: number;
@@ -139,6 +130,7 @@ export interface BackgroundDimParams {
   intensity: number;
   dim_amount: number;
   blur_amount: number;
+  focus_radius: number;
 }
 
 export interface EffectParameters {
@@ -147,7 +139,6 @@ export interface EffectParameters {
   subject_bounds: SubjectBounds;
   element_glow: ElementGlowParams;
   element_scale: ElementScaleParams;
-  neon_outline: NeonOutlineParams;
   echo_trail: EchoTrailParams;
   particle_burst: ParticleBurstParams;
   energy_trails: EnergyTrailsParams;

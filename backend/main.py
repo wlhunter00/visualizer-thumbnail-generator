@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from audio_analysis import analyze_audio, get_waveform_data, get_audio_duration, AudioFeatures
 from effect_engine import (
     EffectToggles, EffectToggle, ImageContext, SubjectBounds, GlowPoint,
-    calculate_effect_parameters, toggles_from_dict, image_context_from_dict,
+    calculate_effect_parameters, toggles_from_dict, toggles_to_dict, image_context_from_dict,
     legacy_settings_to_toggles
 )
 from video_renderer import render_video, RenderSettings, AspectRatio
@@ -164,12 +164,12 @@ class EffectToggleModel(BaseModel):
     enabled: bool = False
     intensity: float = 0.5
     trigger_source: str = "beats"
+    radius: Optional[float] = None
 
 
 class EffectTogglesRequest(BaseModel):
     element_glow: Optional[EffectToggleModel] = None
     element_scale: Optional[EffectToggleModel] = None
-    neon_outline: Optional[EffectToggleModel] = None
     echo_trail: Optional[EffectToggleModel] = None
     particle_burst: Optional[EffectToggleModel] = None
     energy_trails: Optional[EffectToggleModel] = None
@@ -671,7 +671,7 @@ async def auto_suggest_endpoint(session_id: str):
         
         # Get AI suggestions
         from image_analysis import (
-            auto_suggest_effects, effect_suggestion_to_dict,
+            auto_suggest_effects,
             ImageAnalysis, SubjectBounds as IASubjectBounds, GlowPoint as IAGlowPoint
         )
         
@@ -695,8 +695,11 @@ async def auto_suggest_endpoint(session_id: str):
             suggested_particle_style=analysis_dict.get("suggested_particle_style", "sparkles")
         )
         
-        suggestion = await auto_suggest_effects(image_analysis, audio_metrics)
-        suggestion_dict = effect_suggestion_to_dict(suggestion)
+        suggestion_dict = await auto_suggest_effects(
+            image_analysis,
+            audio_metrics,
+            aspect_ratio=session.aspect_ratio,
+        )
         
         # Store in session
         sessions[session_id].effect_toggles = suggestion_dict
@@ -1045,7 +1048,6 @@ def generate_playbook_v2(
     effect_names = {
         "element_glow": "Element Glow",
         "element_scale": "Scale Pulse",
-        "neon_outline": "Neon Outline",
         "echo_trail": "Echo Trail",
         "particle_burst": "Particle Burst",
         "energy_trails": "Energy Trails",
@@ -1247,6 +1249,31 @@ def export_video_task(session_id: str, quality: str, resolution_scale: Optional[
             if session_id in sessions:
                 sessions[session_id].render_status = "export_complete"
                 sessions[session_id].render_progress = 1.0
+
+        # Record successful export for Auto-Suggest few-shot learning
+        try:
+            from export_history import append_export_history, build_history_entry
+
+            audio_metrics = {
+                "tempo": features.tempo,
+                "onset_density": features.onset_density,
+                "average_bass": features.average_bass,
+                "average_mid": features.average_mid,
+                "average_high": features.average_high,
+                "dynamic_range": features.dynamic_range,
+                "beat_strength_variance": features.beat_strength_variance,
+                "average_energy": features.average_energy,
+            }
+            entry = build_history_entry(
+                effect_toggles=toggles_to_dict(toggles),
+                audio_metrics=audio_metrics,
+                image_analysis_dict=session_image_analysis,
+                aspect_ratio=session_aspect_ratio,
+                clip_duration_sec=duration,
+            )
+            append_export_history(entry)
+        except Exception as history_err:
+            print(f"Export history append failed (non-fatal): {history_err}")
         
     except Exception as e:
         with session_lock:

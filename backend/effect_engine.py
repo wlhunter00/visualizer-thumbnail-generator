@@ -6,6 +6,7 @@ No BPM-based assumptions - effects are controlled explicitly by user toggles.
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Tuple, Optional, Literal
+from effect_schema import EFFECT_KEYS, EFFECTS_WITH_TRIGGER_SOURCE, EFFECTS_WITH_RADIUS
 from audio_analysis import AudioFeatures, detect_envelope_peaks
 import math
 
@@ -21,6 +22,7 @@ class EffectToggle:
     enabled: bool = False
     intensity: float = 0.5  # 0-1
     trigger_source: str = "beats"
+    radius: Optional[float] = None  # 0-1 focus area size (background_dim only)
 
 
 @dataclass
@@ -29,7 +31,6 @@ class EffectToggles:
     # Element effects
     element_glow: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.5))
     element_scale: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.3))
-    neon_outline: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.5))
     echo_trail: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.4))
     
     # Particle effects
@@ -45,7 +46,7 @@ class EffectToggles:
     vignette_pulse: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.4))
     
     # Background
-    background_dim: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.3))
+    background_dim: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3))
 
 
 @dataclass
@@ -104,17 +105,6 @@ class ElementScaleParams:
     base_scale: float = 1.0
     max_scale: float = 1.1
     triggers: List[Tuple[float, float]] = field(default_factory=list)  # (time, strength)
-
-
-@dataclass
-class NeonOutlineParams:
-    """Parameters for neon outline effect."""
-    enabled: bool = False
-    intensity: float = 0.5
-    color: Tuple[int, int, int] = (0, 255, 255)  # Cyan default
-    width: float = 3.0
-    glow_radius: float = 10.0
-    pulse_triggers: List[Tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -237,6 +227,7 @@ class BackgroundDimParams:
     intensity: float = 0.3
     dim_amount: float = 0.3  # How much to darken (0-1)
     blur_amount: float = 2.0  # Blur radius
+    focus_radius: float = 0.5  # 0-1 size of the bright focus area
 
 
 @dataclass
@@ -246,10 +237,9 @@ class EffectParameters:
     fps: int = 30
     subject_bounds: SubjectBounds = field(default_factory=SubjectBounds)
     
-    # All 13 effects
+    # All 12 effects
     element_glow: ElementGlowParams = field(default_factory=ElementGlowParams)
     element_scale: ElementScaleParams = field(default_factory=ElementScaleParams)
-    neon_outline: NeonOutlineParams = field(default_factory=NeonOutlineParams)
     echo_trail: EchoTrailParams = field(default_factory=EchoTrailParams)
     particle_burst: ParticleBurstParams = field(default_factory=ParticleBurstParams)
     energy_trails: EnergyTrailsParams = field(default_factory=EnergyTrailsParams)
@@ -506,30 +496,6 @@ def calculate_effect_parameters(
     )
     
     # ========================================================================
-    # NEON OUTLINE
-    # ========================================================================
-    outline_triggers = []
-    if toggles.neon_outline.enabled:
-        outline_triggers = build_triggers(
-            audio_features,
-            toggles.neon_outline.trigger_source,
-            toggles.neon_outline.intensity,
-            base_threshold=0.4,
-        )
-    
-    # Use a contrasting color for outline
-    outline_color = colors_rgb[1] if len(colors_rgb) > 1 else (0, 255, 255)
-    
-    neon_outline = NeonOutlineParams(
-        enabled=toggles.neon_outline.enabled,
-        intensity=toggles.neon_outline.intensity,
-        color=outline_color,
-        width=2 + toggles.neon_outline.intensity * 4,
-        glow_radius=5 + toggles.neon_outline.intensity * 15,
-        pulse_triggers=outline_triggers
-    )
-    
-    # ========================================================================
     # ECHO TRAIL
     # ========================================================================
     echo_trail = EchoTrailParams(
@@ -731,11 +697,13 @@ def calculate_effect_parameters(
     # ========================================================================
     # BACKGROUND DIM
     # ========================================================================
+    bg_focus_radius = toggles.background_dim.radius if toggles.background_dim.radius is not None else 0.5
     background_dim = BackgroundDimParams(
         enabled=toggles.background_dim.enabled,
         intensity=toggles.background_dim.intensity,
         dim_amount=0.2 + toggles.background_dim.intensity * 0.4,
-        blur_amount=1 + toggles.background_dim.intensity * 4
+        blur_amount=1 + toggles.background_dim.intensity * 4,
+        focus_radius=bg_focus_radius,
     )
     
     return EffectParameters(
@@ -744,7 +712,6 @@ def calculate_effect_parameters(
         subject_bounds=bounds,
         element_glow=element_glow,
         element_scale=element_scale,
-        neon_outline=neon_outline,
         echo_trail=echo_trail,
         particle_burst=particle_burst,
         energy_trails=energy_trails,
@@ -806,27 +773,6 @@ def get_effect_value_at_time(
         values["element_scale"] = current_scale
     else:
         values["element_scale"] = 1.0
-    
-    # ========================================================================
-    # NEON OUTLINE
-    # ========================================================================
-    outline = effect_params.neon_outline
-    if outline.enabled:
-        outline_intensity = 0.5  # Base intensity
-        for trigger_time, strength in outline.pulse_triggers:
-            dt = time - trigger_time
-            if 0 <= dt < 0.25:
-                if dt < 0.03:
-                    pulse = (dt / 0.03)
-                else:
-                    pulse = 1 - (dt - 0.03) / 0.22
-                outline_intensity = max(outline_intensity, 0.5 + pulse * 0.5 * strength)
-        values["neon_outline_intensity"] = outline_intensity * outline.intensity
-        values["neon_outline_color"] = outline.color
-        values["neon_outline_width"] = outline.width
-        values["neon_outline_glow"] = outline.glow_radius
-    else:
-        values["neon_outline_intensity"] = 0
     
     # ========================================================================
     # ECHO TRAIL
@@ -1011,6 +957,7 @@ def get_effect_value_at_time(
     values["background_dim_enabled"] = bg_dim.enabled
     values["background_dim_amount"] = bg_dim.dim_amount if bg_dim.enabled else 0
     values["background_blur"] = bg_dim.blur_amount if bg_dim.enabled else 0
+    values["background_focus_radius"] = bg_dim.focus_radius if bg_dim.enabled else 0
     
     # ========================================================================
     # SUBJECT BOUNDS (for masking)
@@ -1027,18 +974,28 @@ def get_effect_value_at_time(
     return values
 
 
+def toggles_to_dict(toggles: EffectToggles) -> Dict[str, Any]:
+    """Serialize EffectToggles to a JSON-friendly dictionary."""
+    result: Dict[str, Any] = {}
+    for name in EFFECT_KEYS:
+        toggle: EffectToggle = getattr(toggles, name)
+        entry: Dict[str, Any] = {
+            "enabled": toggle.enabled,
+            "intensity": toggle.intensity,
+        }
+        if name in EFFECTS_WITH_TRIGGER_SOURCE:
+            entry["trigger_source"] = toggle.trigger_source
+        if name in EFFECTS_WITH_RADIUS:
+            entry["radius"] = toggle.radius if toggle.radius is not None else 0.5
+        result[name] = entry
+    return result
+
+
 def toggles_from_dict(data: Dict[str, Any]) -> EffectToggles:
     """Create EffectToggles from a dictionary (e.g., from JSON request)."""
     toggles = EffectToggles()
 
-    effect_names = [
-        "element_glow", "element_scale", "neon_outline", "echo_trail",
-        "particle_burst", "energy_trails", "light_flares",
-        "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
-        "background_dim"
-    ]
-
-    for name in effect_names:
+    for name in EFFECT_KEYS:
         if name in data:
             effect_data = data[name]
             default_trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if name == "glitch" else DEFAULT_TRIGGER_SOURCE
@@ -1046,6 +1003,7 @@ def toggles_from_dict(data: Dict[str, Any]) -> EffectToggles:
                 enabled=effect_data.get("enabled", False),
                 intensity=effect_data.get("intensity", 0.5),
                 trigger_source=effect_data.get("trigger_source", default_trigger),
+                radius=effect_data.get("radius"),
             )
             setattr(toggles, name, toggle)
 
@@ -1098,14 +1056,12 @@ def legacy_settings_to_toggles(
     toggles.vignette_pulse = EffectToggle(beat_reactivity > 0.2, beat_reactivity * 0.8)
     
     # Map energy level to intensity-related effects
-    toggles.neon_outline = EffectToggle(energy_level > 0.6, energy_level)
     toggles.glitch = EffectToggle(energy_level > 0.7, energy_level * 0.5)
     toggles.strobe_flash = EffectToggle(energy_level > 0.8, energy_level * 0.4)
     toggles.light_flares = EffectToggle(energy_level > 0.5, energy_level * 0.6)
     toggles.energy_trails = EffectToggle(energy_level > 0.4, energy_level * 0.5)
     
-    # Background always on at moderate level
-    toggles.background_dim = EffectToggle(True, 0.3 + energy_level * 0.3)
+    toggles.background_dim = EffectToggle(False, 0.3 + energy_level * 0.3)
     
     # Film grain for lower energy
     toggles.film_grain = EffectToggle(energy_level < 0.4, (1 - energy_level) * 0.3)

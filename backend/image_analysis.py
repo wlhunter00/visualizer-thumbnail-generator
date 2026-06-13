@@ -11,6 +11,15 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
+from effect_schema import (
+    EFFECT_KEYS,
+    build_example_json,
+    build_prompt_effect_docs,
+    default_effect_toggle,
+    default_suggestion_dict,
+    normalize_suggestion,
+)
+from export_history import build_few_shot_examples_section, find_similar_exports
 
 # Load environment variables
 load_dotenv()
@@ -56,26 +65,19 @@ class ImageAnalysis:
 @dataclass
 class EffectSuggestion:
     """Suggested effect settings based on image and audio analysis."""
-    # Element effects
-    element_glow: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "intensity": 0.5})
-    element_scale: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "intensity": 0.3})
-    neon_outline: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.5})
-    echo_trail: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.4})
-    
-    # Particle effects
-    particle_burst: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "intensity": 0.5})
-    energy_trails: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.4})
-    light_flares: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.3})
-    
-    # Style effects
-    glitch: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.3})
-    ripple_wave: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.4})
-    film_grain: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.2})
-    strobe_flash: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "intensity": 0.3})
-    vignette_pulse: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "intensity": 0.4})
-    
-    # Background
-    background_dim: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "intensity": 0.3})
+    element_glow: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("element_glow"))
+    element_scale: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("element_scale"))
+    neon_outline: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("neon_outline"))
+    echo_trail: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("echo_trail"))
+    particle_burst: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("particle_burst"))
+    energy_trails: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("energy_trails"))
+    light_flares: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("light_flares"))
+    glitch: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("glitch"))
+    ripple_wave: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("ripple_wave"))
+    film_grain: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("film_grain"))
+    strobe_flash: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("strobe_flash"))
+    vignette_pulse: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("vignette_pulse"))
+    background_dim: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("background_dim"))
 
 
 def encode_image_to_base64(image_path: str) -> str:
@@ -263,35 +265,29 @@ Requirements:
 
 async def auto_suggest_effects(
     image_analysis: ImageAnalysis,
-    audio_metrics: Dict[str, float]
-) -> EffectSuggestion:
+    audio_metrics: Dict[str, float],
+    aspect_ratio: str = "9:16",
+) -> Dict[str, Any]:
     """
     Use AI to suggest effect settings based on image analysis and audio metrics.
-    
-    Args:
-        image_analysis: Results from analyze_image()
-        audio_metrics: Raw audio metrics dict with keys like:
-            - tempo: BPM
-            - onset_density: hits per second
-            - average_bass: 0-1
-            - average_mid: 0-1
-            - average_high: 0-1
-            - dynamic_range: 0-1
-            - beat_strength_variance: variance of beat strengths
-            - average_energy: 0-1
-            
-    Returns:
-        EffectSuggestion with recommended settings
+
+    Returns canonical effect_toggles dict (enabled, intensity, trigger_source, radius).
     """
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY not set in environment")
-    
-    prompt = f"""You are an expert music visualizer designer. Based on the image and audio characteristics below, suggest which visual effects to enable and at what intensity.
+
+    similar = find_similar_exports(audio_metrics, image_analysis, k=3, aspect_ratio=aspect_ratio)
+    few_shot = build_few_shot_examples_section(similar)
+    effect_docs = build_prompt_effect_docs()
+    example_json = build_example_json()
+
+    prompt = f"""You are an expert music visualizer designer. Based on the image and audio characteristics below, suggest effect settings using ALL available levers per effect.
 
 IMAGE ANALYSIS:
 - Subject: {image_analysis.subject}
 - Description: {image_analysis.subject_description}
 - Mood: {image_analysis.mood}
+- Subject bounds (0-1): x={image_analysis.bounds.x:.2f}, y={image_analysis.bounds.y:.2f}, w={image_analysis.bounds.w:.2f}, h={image_analysis.bounds.h:.2f}
 - Has glow points: {len(image_analysis.glow_points) > 0}
 - Dominant colors: {', '.join(image_analysis.colors)}
 - Suggested particle style: {image_analysis.suggested_particle_style}
@@ -306,46 +302,25 @@ AUDIO METRICS (raw data - interpret these yourself, don't assume BPM alone indic
 - Beat strength variance: {audio_metrics.get('beat_strength_variance', 0.1):.3f}
 - Average energy: {audio_metrics.get('average_energy', 0.5):.2f}
 
-AVAILABLE EFFECTS:
-1. element_glow - Subject emits pulsating light (good for light sources, faces, focal points)
-2. element_scale - Subject grows/shrinks with beat (subtle, adds life)
-3. neon_outline - Glowing edge around subject (cyberpunk, bold)
-4. echo_trail - Afterimage effect (motion, dreamy)
-5. particle_burst - Particles explode from subject on beats (energetic, celebratory)
-6. energy_trails - Glowing lines orbit subject (mystical, flowing)
-7. light_flares - Lens flare from glow points (cinematic, dramatic)
-8. glitch - RGB split, chromatic aberration (edgy, electronic)
-9. ripple_wave - Distortion waves from subject (impactful, bass-heavy)
-10. film_grain - VHS/retro texture (nostalgic, lo-fi)
-11. strobe_flash - Brief flashes on strong beats (intense, use sparingly)
-12. vignette_pulse - Dark edges pulse with rhythm (focus, atmosphere)
-13. background_dim - Darken background to make subject pop (contrast)
+{few_shot}
 
-Return a JSON object where each effect has "enabled" (boolean) and "intensity" (0.0-1.0):
+{effect_docs}
 
-{{
-    "element_glow": {{"enabled": true, "intensity": 0.7}},
-    "element_scale": {{"enabled": true, "intensity": 0.3}},
-    "neon_outline": {{"enabled": false, "intensity": 0.5}},
-    "echo_trail": {{"enabled": false, "intensity": 0.4}},
-    "particle_burst": {{"enabled": true, "intensity": 0.6}},
-    "energy_trails": {{"enabled": true, "intensity": 0.5}},
-    "light_flares": {{"enabled": false, "intensity": 0.3}},
-    "glitch": {{"enabled": false, "intensity": 0.3}},
-    "ripple_wave": {{"enabled": false, "intensity": 0.4}},
-    "film_grain": {{"enabled": false, "intensity": 0.2}},
-    "strobe_flash": {{"enabled": false, "intensity": 0.3}},
-    "vignette_pulse": {{"enabled": true, "intensity": 0.4}},
-    "background_dim": {{"enabled": true, "intensity": 0.3}}
-}}
+Return a JSON object with one key per effect. Each effect must include "enabled" and "intensity".
+For beat-reactive effects, include "trigger_source" when enabled.
+For background_dim when enabled, include "radius" (0-1): tight/small subject → lower radius (~0.35), subject fills frame → higher (~0.65).
+
+Example response shape:
+{example_json}
 
 Consider:
 - If image has glow points, enable light_flares and element_glow
-- High onset density = more reactive effects (particle_burst, glitch)
-- High bass = ripple_wave, strong scale
-- High highs = sparkly particles, light effects
+- High onset density = more reactive effects (particle_burst, glitch with onsets)
+- High bass = ripple_wave with low trigger, strong scale with low trigger
+- High highs = light_flares/strobe with high trigger, sparkly particles
 - Dark mood = vignette, dim background, subtle effects
 - Energetic mood = more enabled effects, higher intensities
+- Match trigger_source to the dominant frequency content of the track
 - Don't enable everything - be selective for a cohesive look
 
 Return ONLY the JSON, no explanation."""
@@ -362,39 +337,30 @@ Return ONLY the JSON, no explanation."""
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
-                "max_completion_tokens": 800,
+                "max_completion_tokens": 1200,
             }
         )
-        
+
         if response.status_code != 200:
             raise Exception(f"OpenAI API error: {response.status_code} - {response.text}")
-        
+
         result = response.json()
         content = result["choices"][0]["message"]["content"]
-        
-        # Parse JSON from response
+
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
         elif "```" in content:
             content = content.split("```")[1].split("```")[0]
-        
-        data = json.loads(content.strip())
-        
-        return EffectSuggestion(
-            element_glow=data.get("element_glow", {"enabled": True, "intensity": 0.5}),
-            element_scale=data.get("element_scale", {"enabled": True, "intensity": 0.3}),
-            neon_outline=data.get("neon_outline", {"enabled": False, "intensity": 0.5}),
-            echo_trail=data.get("echo_trail", {"enabled": False, "intensity": 0.4}),
-            particle_burst=data.get("particle_burst", {"enabled": True, "intensity": 0.5}),
-            energy_trails=data.get("energy_trails", {"enabled": False, "intensity": 0.4}),
-            light_flares=data.get("light_flares", {"enabled": False, "intensity": 0.3}),
-            glitch=data.get("glitch", {"enabled": False, "intensity": 0.3}),
-            ripple_wave=data.get("ripple_wave", {"enabled": False, "intensity": 0.4}),
-            film_grain=data.get("film_grain", {"enabled": False, "intensity": 0.2}),
-            strobe_flash=data.get("strobe_flash", {"enabled": False, "intensity": 0.3}),
-            vignette_pulse=data.get("vignette_pulse", {"enabled": True, "intensity": 0.4}),
-            background_dim=data.get("background_dim", {"enabled": True, "intensity": 0.3})
-        )
+
+        try:
+            data = json.loads(content.strip())
+        except json.JSONDecodeError:
+            data = default_suggestion_dict()
+
+    normalized = normalize_suggestion(data, audio_metrics, image_analysis)
+
+    from effect_engine import toggles_from_dict, toggles_to_dict
+    return toggles_to_dict(toggles_from_dict(normalized))
 
 
 def image_analysis_to_dict(analysis: ImageAnalysis) -> Dict[str, Any]:
@@ -420,21 +386,7 @@ def image_analysis_to_dict(analysis: ImageAnalysis) -> Dict[str, Any]:
 
 def effect_suggestion_to_dict(suggestion: EffectSuggestion) -> Dict[str, Any]:
     """Convert EffectSuggestion to a JSON-serializable dict."""
-    return {
-        "element_glow": suggestion.element_glow,
-        "element_scale": suggestion.element_scale,
-        "neon_outline": suggestion.neon_outline,
-        "echo_trail": suggestion.echo_trail,
-        "particle_burst": suggestion.particle_burst,
-        "energy_trails": suggestion.energy_trails,
-        "light_flares": suggestion.light_flares,
-        "glitch": suggestion.glitch,
-        "ripple_wave": suggestion.ripple_wave,
-        "film_grain": suggestion.film_grain,
-        "strobe_flash": suggestion.strobe_flash,
-        "vignette_pulse": suggestion.vignette_pulse,
-        "background_dim": suggestion.background_dim
-    }
+    return {key: getattr(suggestion, key) for key in EFFECT_KEYS}
 
 
 # ============================================================================

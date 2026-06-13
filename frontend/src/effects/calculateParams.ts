@@ -28,12 +28,6 @@ export function calculateEffectParams(
     ? buildTriggers(audioFeatures, ts('element_scale'), toggles.element_scale.intensity, 0.3, false)
     : [];
 
-  const outlineTriggers = toggles.neon_outline.enabled
-    ? buildTriggers(audioFeatures, ts('neon_outline'), toggles.neon_outline.intensity, 0.4)
-    : [];
-
-  const outlineColor = colorsRgb[1] ?? [0, 255, 255] as RGB;
-
   const burstTriggers = toggles.particle_burst.enabled
     ? buildTriggers(audioFeatures, ts('particle_burst'), toggles.particle_burst.intensity, 0.4)
     : [];
@@ -100,14 +94,6 @@ export function calculateEffectParams(
       base_scale: 1.0,
       max_scale: 1.0 + toggles.element_scale.intensity * 0.15,
       triggers: scaleTriggers,
-    },
-    neon_outline: {
-      enabled: toggles.neon_outline.enabled,
-      intensity: toggles.neon_outline.intensity,
-      color: outlineColor,
-      width: 2 + toggles.neon_outline.intensity * 4,
-      glow_radius: 5 + toggles.neon_outline.intensity * 15,
-      pulse_triggers: outlineTriggers,
     },
     echo_trail: {
       enabled: toggles.echo_trail.enabled,
@@ -200,6 +186,7 @@ export function calculateEffectParams(
       intensity: toggles.background_dim.intensity,
       dim_amount: 0.2 + toggles.background_dim.intensity * 0.4,
       blur_amount: 1 + toggles.background_dim.intensity * 4,
+      focus_radius: toggles.background_dim.radius ?? 0.5,
     },
   };
 }

@@ -84,13 +84,6 @@ SINGLE_EFFECTS = [
         explanation="Makes your subject pulse larger on each beat, creating a breathing or pumping effect. Stronger beats cause bigger scale changes, syncing the visual impact directly to the music's energy."
     ),
     EffectInfo(
-        key="neon_outline",
-        name="Neon Outline",
-        description="Glowing edge around subject",
-        category="element",
-        explanation="Draws a glowing, colored edge around your subject that pulses brighter on beats. Creates an 80s retro or cyberpunk aesthetic perfect for electronic and synthwave tracks."
-    ),
-    EffectInfo(
         key="echo_trail",
         name="Echo Trail",
         description="Ghostly afterimage effect",
@@ -193,10 +186,10 @@ PRESETS = [
     PresetInfo(
         key="preset_synthwave",
         name="Synthwave Retro",
-        description="Neon outlines with retro grain",
+        description="Retro glow with film grain",
         category="genre",
-        explanation="Channel the 80s with glowing neon edges and analog texture. Ideal for synthwave, retrowave, and anything with that nostalgic electronic feel.",
-        effects={"neon_outline": 0.9, "film_grain": 0.3, "vignette_pulse": 0.5, "element_glow": 0.4, "background_dim": 0.4}
+        explanation="Channel the 80s with warm glow and analog texture. Ideal for synthwave, retrowave, and anything with that nostalgic electronic feel.",
+        effects={"element_glow": 0.9, "film_grain": 0.3, "vignette_pulse": 0.5, "background_dim": 0.4}
     ),
     PresetInfo(
         key="preset_dreamy_ambient",
@@ -225,10 +218,10 @@ PRESETS = [
     PresetInfo(
         key="preset_cyberpunk",
         name="Cyberpunk",
-        description="Neon, glitch, and energy trails",
+        description="Glitch and energy trails",
         category="genre",
-        explanation="Dystopian future aesthetics with corrupted data and neon lights. Great for industrial, darksynth, or cyberpunk-themed content.",
-        effects={"neon_outline": 0.8, "glitch": 0.6, "energy_trails": 0.7, "background_dim": 0.5, "vignette_pulse": 0.4}
+        explanation="Dystopian future aesthetics with corrupted data and glowing trails. Great for industrial, darksynth, or cyberpunk-themed content.",
+        effects={"element_glow": 0.8, "glitch": 0.6, "energy_trails": 0.7, "background_dim": 0.5, "vignette_pulse": 0.4}
     ),
     PresetInfo(
         key="preset_psychedelic",
@@ -254,7 +247,7 @@ PRESETS = [
         description="All the light effects combined",
         category="combo",
         explanation="Maximum luminosity with every glow effect working together. The subject radiates light from within while lens flares add cinematic sparkle.",
-        effects={"element_glow": 0.9, "neon_outline": 0.7, "light_flares": 0.8, "background_dim": 0.4}
+        effects={"element_glow": 0.9, "light_flares": 0.8, "energy_trails": 0.7, "background_dim": 0.4}
     ),
     PresetInfo(
         key="preset_motion_heavy",
@@ -313,7 +306,7 @@ PRESETS = [
         category="intensity",
         explanation="Absolute sensory overload. Every effect cranked up for maximum visual impact. Use sparingly - best for drops, breakdowns, or experimental content.",
         effects={
-            "element_glow": 0.9, "element_scale": 0.8, "neon_outline": 0.7, "echo_trail": 0.6,
+            "element_glow": 0.9, "element_scale": 0.8, "echo_trail": 0.6,
             "particle_burst": 1.0, "energy_trails": 0.8, "light_flares": 0.7,
             "glitch": 0.6, "ripple_wave": 0.5, "strobe_flash": 0.5, "vignette_pulse": 0.7, "background_dim": 0.5
         }
@@ -326,7 +319,7 @@ PRESETS = [
         description="Eye-catching for short-form",
         category="platform",
         explanation="Optimized for the TikTok algorithm - high contrast, quick visual payoff, and attention-grabbing effects that pop in the first second.",
-        effects={"glitch": 0.6, "strobe_flash": 0.5, "particle_burst": 0.8, "element_scale": 0.6, "neon_outline": 0.5}
+        effects={"glitch": 0.6, "strobe_flash": 0.5, "particle_burst": 0.8, "element_scale": 0.6, "energy_trails": 0.5}
     ),
     PresetInfo(
         key="preset_youtube_lyric",
@@ -342,7 +335,7 @@ PRESETS = [
         description="Bold and shareable",
         category="platform",
         explanation="Made for the gram - vibrant effects that look great in vertical format and encourage shares and saves.",
-        effects={"neon_outline": 0.7, "particle_burst": 0.6, "energy_trails": 0.5, "background_dim": 0.4, "element_glow": 0.5}
+        effects={"light_flares": 0.7, "particle_burst": 0.6, "energy_trails": 0.5, "background_dim": 0.4, "element_glow": 0.5}
     ),
     
     # === CREATIVE/THEMED ===
@@ -376,7 +369,7 @@ PRESETS = [
         description="City lights aesthetic",
         category="theme",
         explanation="Late night in the city with neon signs and light trails. Urban, modern, and slightly mysterious.",
-        effects={"neon_outline": 0.8, "energy_trails": 0.7, "particle_burst": 0.5, "background_dim": 0.5, "vignette_pulse": 0.4}
+        effects={"element_glow": 0.8, "energy_trails": 0.7, "particle_burst": 0.5, "background_dim": 0.5, "vignette_pulse": 0.4}
     ),
     PresetInfo(
         key="preset_glitch_art",
@@ -408,7 +401,7 @@ PRESETS = [
         description="Club lights and movement",
         category="theme",
         explanation="You're in the middle of the dance floor. Lights spin around you, strobes flash, and particles fly. Pure club energy.",
-        effects={"strobe_flash": 0.6, "energy_trails": 0.8, "particle_burst": 0.7, "element_scale": 0.6, "neon_outline": 0.4}
+        effects={"strobe_flash": 0.6, "energy_trails": 0.8, "particle_burst": 0.7, "element_scale": 0.6, "light_flares": 0.4}
     ),
 ]
 
@@ -424,7 +417,7 @@ def create_single_effect_toggles(effect_key: str) -> EffectToggles:
     
     # Disable all effects first
     for attr_name in [
-        "element_glow", "element_scale", "neon_outline", "echo_trail",
+        "element_glow", "element_scale", "echo_trail",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
@@ -443,7 +436,7 @@ def create_preset_toggles(effects_dict: dict) -> EffectToggles:
     
     # Disable all effects first
     for attr_name in [
-        "element_glow", "element_scale", "neon_outline", "echo_trail",
+        "element_glow", "element_scale", "echo_trail",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"

@@ -11,6 +11,7 @@ build/
 backend/uploads/
 backend/outputs/
 backend/demos/
+backend/data/
 
 # Environment
 .env

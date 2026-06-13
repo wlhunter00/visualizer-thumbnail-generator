@@ -27,13 +27,13 @@ export interface EffectToggle {
   enabled: boolean;
   intensity: number; // 0-1
   trigger_source?: TriggerSource;
+  radius?: number; // 0-1, focus area size (background_dim only)
 }
 
 export interface EffectToggles {
   // Element effects
   element_glow: EffectToggle;
   element_scale: EffectToggle;
-  neon_outline: EffectToggle;
   echo_trail: EffectToggle;
   
   // Particle effects
@@ -55,7 +55,6 @@ export interface EffectToggles {
 export const DEFAULT_EFFECT_TOGGLES: EffectToggles = {
   element_glow: { enabled: true, intensity: 0.5, trigger_source: 'beats' },
   element_scale: { enabled: true, intensity: 0.3, trigger_source: 'beats' },
-  neon_outline: { enabled: false, intensity: 0.5, trigger_source: 'beats' },
   echo_trail: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
   particle_burst: { enabled: true, intensity: 0.5, trigger_source: 'beats' },
   energy_trails: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
@@ -65,7 +64,7 @@ export const DEFAULT_EFFECT_TOGGLES: EffectToggles = {
   film_grain: { enabled: false, intensity: 0.2, trigger_source: 'beats' },
   strobe_flash: { enabled: false, intensity: 0.3, trigger_source: 'beats' },
   vignette_pulse: { enabled: true, intensity: 0.4, trigger_source: 'beats' },
-  background_dim: { enabled: true, intensity: 0.3, trigger_source: 'beats' },
+  background_dim: { enabled: false, intensity: 0.3, radius: 0.5, trigger_source: 'beats' },
 };
 
 // Effect metadata for UI
@@ -75,13 +74,13 @@ export interface EffectMeta {
   description: string;
   category: 'element' | 'particle' | 'style' | 'background';
   supportsTriggerSource?: boolean;
+  supportsRadius?: boolean;
 }
 
 export const EFFECT_METADATA: EffectMeta[] = [
   // Element effects
   { key: 'element_glow', name: 'Glow Pulse', description: 'Subject emits pulsating light', category: 'element', supportsTriggerSource: true },
   { key: 'element_scale', name: 'Scale Pulse', description: 'Subject grows/shrinks on beats', category: 'element', supportsTriggerSource: true },
-  { key: 'neon_outline', name: 'Neon Outline', description: 'Glowing edge around subject', category: 'element', supportsTriggerSource: true },
   { key: 'echo_trail', name: 'Echo Trail', description: 'Ghostly afterimage effect', category: 'element' },
   
   // Particle effects
@@ -97,7 +96,7 @@ export const EFFECT_METADATA: EffectMeta[] = [
   { key: 'vignette_pulse', name: 'Vignette Pulse', description: 'Dark edges pulse with rhythm', category: 'style', supportsTriggerSource: true },
   
   // Background
-  { key: 'background_dim', name: 'Background Dim', description: 'Darken background for contrast', category: 'background' },
+  { key: 'background_dim', name: 'Background Dim', description: 'Darken background for contrast', category: 'background', supportsRadius: true },
 ];
 
 // ============================================================================

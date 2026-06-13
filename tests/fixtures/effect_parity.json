@@ -23,7 +23,6 @@
   "toggles": {
     "element_glow": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
     "element_scale": { "enabled": true, "intensity": 0.3, "trigger_source": "beats" },
-    "neon_outline": { "enabled": false, "intensity": 0.5 },
     "echo_trail": { "enabled": false, "intensity": 0.4 },
     "particle_burst": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
     "energy_trails": { "enabled": false, "intensity": 0.4 },
@@ -33,6 +32,6 @@
     "film_grain": { "enabled": false, "intensity": 0.2 },
     "strobe_flash": { "enabled": false, "intensity": 0.3 },
     "vignette_pulse": { "enabled": true, "intensity": 0.4, "trigger_source": "beats" },
-    "background_dim": { "enabled": true, "intensity": 0.3 }
+    "background_dim": { "enabled": false, "intensity": 0.3 }
   }
 }

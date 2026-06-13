@@ -534,8 +534,8 @@ function MainApp({ initialSessionId }: MainAppProps) {
                 </p>
               </div>
 
-              <div className="grid lg:grid-cols-3 gap-8">
-                <div className="lg:col-span-2 space-y-6">
+              <div className="grid lg:grid-cols-3 gap-8 items-start">
+                <div className="lg:col-span-2 space-y-6 lg:sticky lg:top-6 lg:z-10 lg:max-h-[calc(100dvh-1.5rem)] lg:overflow-y-auto">
                   {imagePreview && (
                     <LivePreviewCanvas
                       imageUrl={imagePreview}

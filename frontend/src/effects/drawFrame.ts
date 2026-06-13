@@ -3,19 +3,83 @@ import type { RGB } from './colorUtils';
 import { ParticleSystem } from './particleSystem';
 
 export interface DrawFrameState {
-  frameHistory: ImageData[];
   particleSystem: ParticleSystem;
   lastClipTime: number;
+  lastScale: number;
   noiseCanvas: HTMLCanvasElement | null;
 }
 
 export function createDrawState(): DrawFrameState {
   return {
-    frameHistory: [],
     particleSystem: new ParticleSystem(),
     lastClipTime: -1,
+    lastScale: -1,
     noiseCanvas: null,
   };
+}
+
+function drawSubjectClipped(
+  ctx: CanvasRenderingContext2D,
+  baseImage: HTMLCanvasElement,
+  w: number,
+  h: number,
+  bounds: { x: number; y: number; w: number; h: number; center_x: number; center_y: number },
+  scale: number,
+  alpha: number,
+  offsetX = 0,
+  offsetY = 0
+) {
+  const cx = bounds.center_x * w;
+  const cy = bounds.center_y * h;
+  const ecx = (bounds.x + bounds.w / 2) * w;
+  const ecy = (bounds.y + bounds.h / 2) * h;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(cx + offsetX, cy + offsetY);
+  ctx.scale(scale, scale);
+  ctx.translate(-cx, -cy);
+  ctx.beginPath();
+  ctx.ellipse(
+    ecx, ecy,
+    (bounds.w / 2) * w, (bounds.h / 2) * h,
+    0, 0, Math.PI * 2
+  );
+  ctx.clip();
+  ctx.drawImage(baseImage, 0, 0, w, h);
+  ctx.restore();
+}
+
+function drawEchoTrailSubjects(
+  ctx: CanvasRenderingContext2D,
+  baseImage: HTMLCanvasElement,
+  w: number,
+  h: number,
+  bounds: { x: number; y: number; w: number; h: number; center_x: number; center_y: number },
+  scale: number,
+  state: DrawFrameState,
+  values: EffectValues
+) {
+  const count = values.echo_trail_count as number;
+  const decay = values.echo_trail_decay as number;
+  const intensity = values.echo_trail_intensity as number;
+  if (!intensity || count <= 0) return;
+
+  const scaleDelta = state.lastScale >= 0 ? scale - state.lastScale : 0;
+  const motion = Math.abs(scaleDelta);
+  const spread = Math.max(w, h) * (motion > 0.0005 ? motion * 6 : 0.008 * intensity);
+  const dirX = scaleDelta !== 0 ? Math.sign(scaleDelta) : 1;
+  const dirY = scaleDelta !== 0 ? Math.sign(scaleDelta) * 0.5 : 0.5;
+
+  for (let i = count; i >= 1; i--) {
+    const alpha = intensity * Math.pow(decay, i) * 0.55;
+    if (alpha < 0.03) continue;
+
+    const ghostScale = scale * (1 - i * 0.01 * intensity);
+    const ox = dirX * spread * i;
+    const oy = dirY * spread * i;
+    drawSubjectClipped(ctx, baseImage, w, h, bounds, ghostScale, alpha, ox, oy);
+  }
 }
 
 function getNoiseCanvas(state: DrawFrameState, w: number, h: number): HTMLCanvasElement {
@@ -101,6 +165,7 @@ function drawBackgroundDim(
   if (!values.background_dim_enabled) return;
   const dimAmount = values.background_dim_amount as number;
   const blurAmount = values.background_blur as number;
+  const focusRadius = (values.background_focus_radius as number) ?? 0.5;
   if (dimAmount < 0.01 && blurAmount < 0.1) return;
 
   const bounds = values.subject_bounds as { x: number; y: number; w: number; h: number };
@@ -108,7 +173,10 @@ function drawBackgroundDim(
   const by = bounds.y * h;
   const bw = bounds.w * w;
   const bh = bounds.h * h;
-  const padding = Math.min(bw, bh) * 0.2;
+  const minDim = Math.min(bw, bh);
+  const maxDim = Math.max(bw, bh);
+  const innerR = minDim * (0.05 + focusRadius * 0.4);
+  const outerR = maxDim * (0.35 + focusRadius * 0.9) + minDim * (0.1 + focusRadius * 0.3);
 
   const offscreen = document.createElement('canvas');
   offscreen.width = w;
@@ -122,8 +190,8 @@ function drawBackgroundDim(
   ctx.save();
   ctx.globalCompositeOperation = 'destination-out';
   const mask = ctx.createRadialGradient(
-    bx + bw / 2, by + bh / 2, Math.min(bw, bh) * 0.1,
-    bx + bw / 2, by + bh / 2, Math.max(bw, bh) * 0.6 + padding
+    bx + bw / 2, by + bh / 2, innerR,
+    bx + bw / 2, by + bh / 2, outerR
   );
   mask.addColorStop(0, 'rgba(0,0,0,0)');
   mask.addColorStop(0.6, 'rgba(0,0,0,0.3)');
@@ -263,24 +331,6 @@ export function drawFrame(
   const scale = values.element_scale as number ?? 1;
   const bounds = values.subject_bounds as { center_x: number; center_y: number };
 
-  // Echo trail: draw faded history frames
-  if (values.echo_trail_enabled && state.frameHistory.length > 0) {
-    const count = Math.min(values.echo_trail_count as number, state.frameHistory.length);
-    const decay = values.echo_trail_decay as number;
-    for (let i = 1; i <= count; i++) {
-      const histIdx = state.frameHistory.length - 1 - i;
-      if (histIdx < 0) break;
-      ctx.save();
-      ctx.globalAlpha = Math.pow(decay, i) * (values.echo_trail_intensity as number) * 0.5;
-      const histCanvas = document.createElement('canvas');
-      histCanvas.width = w;
-      histCanvas.height = h;
-      histCanvas.getContext('2d')!.putImageData(state.frameHistory[histIdx], 0, 0);
-      ctx.drawImage(histCanvas, 0, 0);
-      ctx.restore();
-    }
-  }
-
   // Base image with scale pulse
   ctx.save();
   if (scale !== 1) {
@@ -296,28 +346,23 @@ export function drawFrame(
   // Background dim (needs base drawn first)
   drawBackgroundDim(ctx, baseImage, w, h, values);
 
-  // Re-draw subject on top after dim
-  ctx.save();
-  if (scale !== 1) {
-    const cx = bounds.center_x * w;
-    const cy = bounds.center_y * h;
-    ctx.translate(cx, cy);
-    ctx.scale(scale, scale);
-    ctx.translate(-cx, -cy);
-  }
   const b = values.subject_bounds as { x: number; y: number; w: number; h: number; center_x: number; center_y: number };
-  ctx.beginPath();
-  ctx.ellipse(
-    (b.x + b.w / 2) * w, (b.y + b.h / 2) * h,
-    (b.w / 2) * w, (b.h / 2) * h,
-    0, 0, Math.PI * 2
-  );
-  ctx.clip();
-  ctx.drawImage(baseImage, 0, 0, w, h);
-  ctx.restore();
+
+  // Echo trail: ghost copies of the subject (preview approximation; export uses temporal compositing)
+  if (values.echo_trail_enabled) {
+    if (state.lastClipTime >= 0 && clipTime + 0.02 < state.lastClipTime) {
+      state.lastScale = -1;
+    }
+    drawEchoTrailSubjects(ctx, baseImage, w, h, b, scale, state, values);
+  }
+
+  // Re-draw subject on top after dim
+  drawSubjectClipped(ctx, baseImage, w, h, b, scale, 1);
+  state.lastScale = scale;
 
   drawGlow(ctx, w, h, values);
   drawNeonOutline(ctx, w, h, values);
+
   drawEnergyTrails(ctx, w, h, values);
   drawLightFlares(ctx, w, h, values);
 
@@ -350,19 +395,10 @@ export function drawFrame(
   drawFilmGrain(ctx, state, w, h, values);
   drawStrobe(ctx, w, h, values);
   drawGlitch(ctx, baseImage, w, h, values);
-
-  // Store frame for echo trail
-  if (values.echo_trail_enabled) {
-    const maxHistory = (values.echo_trail_count as number) + 1;
-    state.frameHistory.push(ctx.getImageData(0, 0, w, h));
-    if (state.frameHistory.length > maxHistory) {
-      state.frameHistory.shift();
-    }
-  }
 }
 
 export function resetDrawState(state: DrawFrameState) {
-  state.frameHistory = [];
   state.particleSystem.reset();
   state.lastClipTime = -1;
+  state.lastScale = -1;
 }

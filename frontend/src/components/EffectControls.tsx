@@ -66,7 +66,10 @@ function TriggerSourceSelect({ value, options, onChange }: TriggerSourceSelectPr
         <ChevronDown className={`w-3.5 h-3.5 text-surface-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-surface-200 rounded-lg shadow-lg overflow-hidden">
+        <div
+          className="absolute z-20 left-0 right-0 mt-1 bg-white border border-surface-200 rounded-lg shadow-lg max-h-48 overflow-y-auto overscroll-contain"
+          onWheel={(e) => e.stopPropagation()}
+        >
           {options.map(option => (
             <button
               key={option.value}
@@ -114,7 +117,7 @@ export default function EffectControls({
 
   const handleToggleChange = (
     key: keyof EffectToggles,
-    field: 'enabled' | 'intensity' | 'trigger_source',
+    field: 'enabled' | 'intensity' | 'trigger_source' | 'radius',
     value: boolean | number | TriggerSource
   ) => {
     const newToggles = { ...effectToggles };
@@ -190,7 +193,7 @@ export default function EffectControls({
       )}
 
       {/* Effect Categories */}
-      <div className="bg-white rounded-2xl border border-surface-200 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-surface-200">
         {EFFECT_CATEGORIES.map((category, idx) => {
           const effects = getEffectsByCategory(category.id);
           const enabledCount = countEnabledInCategory(category.id);
@@ -285,6 +288,23 @@ export default function EffectControls({
                               <span>Subtle</span>
                               <span>Intense</span>
                             </div>
+                            {effect.supportsRadius && (
+                              <>
+                                <div className="text-[10px] text-surface-500 mt-3 mb-1">Focus radius</div>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="100"
+                                  value={Math.round((toggle?.radius ?? 0.5) * 100)}
+                                  onChange={(e) => handleToggleChange(effect.key, 'radius', parseInt(e.target.value) / 100)}
+                                  className="w-full h-1.5 bg-surface-200 rounded-lg appearance-none cursor-pointer accent-accent"
+                                />
+                                <div className="flex justify-between text-[10px] text-surface-400 mt-1">
+                                  <span>Tight</span>
+                                  <span>Wide</span>
+                                </div>
+                              </>
+                            )}
                             {effect.supportsTriggerSource && (
                               <div>
                                 <div className="text-[10px] text-surface-500 mt-2 mb-0.5">Reacts to</div>
