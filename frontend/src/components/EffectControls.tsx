@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { 
   EffectToggles, 
-  EffectToggle,
+  TriggerSource,
   EFFECT_METADATA, 
   EFFECT_CATEGORIES,
-  ImageAnalysis 
+  ImageAnalysis,
+  TRIGGER_SOURCE_OPTIONS,
+  GLITCH_TRIGGER_SOURCE_OPTIONS,
 } from '../types';
 import { 
   Sparkles, 
@@ -32,6 +34,61 @@ const categoryIcons: Record<string, React.ReactNode> = {
   background: <Zap className="w-4 h-4" />,
 };
 
+interface TriggerSourceSelectProps {
+  value: TriggerSource;
+  options: typeof TRIGGER_SOURCE_OPTIONS;
+  onChange: (value: TriggerSource) => void;
+}
+
+function TriggerSourceSelect({ value, options, onChange }: TriggerSourceSelectProps) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const selected = options.find(o => o.value === value) ?? options[0];
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} className="relative mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-xs font-medium text-surface-700 bg-white border border-surface-200 rounded-lg hover:border-accent/40 transition-colors"
+      >
+        <span>{selected.label}</span>
+        <ChevronDown className={`w-3.5 h-3.5 text-surface-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-surface-200 rounded-lg shadow-lg overflow-hidden">
+          {options.map(option => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 hover:bg-accent/5 transition-colors ${
+                option.value === value ? 'bg-accent/10' : ''
+              }`}
+            >
+              <div className="text-xs font-medium text-surface-800">{option.label}</div>
+              <div className="text-[10px] text-surface-500 mt-0.5">{option.description}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function EffectControls({
   effectToggles,
   onChange,
@@ -55,7 +112,11 @@ export default function EffectControls({
     });
   };
 
-  const handleToggleChange = (key: keyof EffectToggles, field: 'enabled' | 'intensity', value: boolean | number) => {
+  const handleToggleChange = (
+    key: keyof EffectToggles,
+    field: 'enabled' | 'intensity' | 'trigger_source',
+    value: boolean | number | TriggerSource
+  ) => {
     const newToggles = { ...effectToggles };
     newToggles[key] = {
       ...newToggles[key],
@@ -224,6 +285,16 @@ export default function EffectControls({
                               <span>Subtle</span>
                               <span>Intense</span>
                             </div>
+                            {effect.supportsTriggerSource && (
+                              <div>
+                                <div className="text-[10px] text-surface-500 mt-2 mb-0.5">Reacts to</div>
+                                <TriggerSourceSelect
+                                  value={(toggle?.trigger_source ?? (effect.key === 'glitch' ? 'onsets' : 'beats')) as TriggerSource}
+                                  options={effect.key === 'glitch' ? GLITCH_TRIGGER_SOURCE_OPTIONS : TRIGGER_SOURCE_OPTIONS}
+                                  onChange={(source) => handleToggleChange(effect.key, 'trigger_source', source)}
+                                />
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

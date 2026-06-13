@@ -2,9 +2,31 @@
 // Effect Toggle Types
 // ============================================================================
 
+export type TriggerSource = 'beats' | 'full' | 'low' | 'medium' | 'high' | 'onsets';
+
+export interface TriggerSourceOption {
+  value: TriggerSource;
+  label: string;
+  description: string;
+}
+
+export const TRIGGER_SOURCE_OPTIONS: TriggerSourceOption[] = [
+  { value: 'beats', label: 'Beats', description: 'Synced to kick, snare, and tempo' },
+  { value: 'full', label: 'dB', description: 'Overall loudness' },
+  { value: 'low', label: 'Low freq', description: 'Below 250 Hz — sub, kick, bass' },
+  { value: 'medium', label: 'Mid freq', description: '250 Hz–3500 Hz — vocals, snare, guitars' },
+  { value: 'high', label: 'High freq', description: 'Above 3500 Hz — cymbals, hi-hats, air' },
+];
+
+export const GLITCH_TRIGGER_SOURCE_OPTIONS: TriggerSourceOption[] = [
+  { value: 'onsets', label: 'Onsets', description: 'Transients and sharp hits' },
+  ...TRIGGER_SOURCE_OPTIONS,
+];
+
 export interface EffectToggle {
   enabled: boolean;
   intensity: number; // 0-1
+  trigger_source?: TriggerSource;
 }
 
 export interface EffectToggles {
@@ -31,19 +53,19 @@ export interface EffectToggles {
 }
 
 export const DEFAULT_EFFECT_TOGGLES: EffectToggles = {
-  element_glow: { enabled: true, intensity: 0.5 },
-  element_scale: { enabled: true, intensity: 0.3 },
-  neon_outline: { enabled: false, intensity: 0.5 },
-  echo_trail: { enabled: false, intensity: 0.4 },
-  particle_burst: { enabled: true, intensity: 0.5 },
-  energy_trails: { enabled: false, intensity: 0.4 },
-  light_flares: { enabled: false, intensity: 0.3 },
-  glitch: { enabled: false, intensity: 0.3 },
-  ripple_wave: { enabled: false, intensity: 0.4 },
-  film_grain: { enabled: false, intensity: 0.2 },
-  strobe_flash: { enabled: false, intensity: 0.3 },
-  vignette_pulse: { enabled: true, intensity: 0.4 },
-  background_dim: { enabled: true, intensity: 0.3 },
+  element_glow: { enabled: true, intensity: 0.5, trigger_source: 'beats' },
+  element_scale: { enabled: true, intensity: 0.3, trigger_source: 'beats' },
+  neon_outline: { enabled: false, intensity: 0.5, trigger_source: 'beats' },
+  echo_trail: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
+  particle_burst: { enabled: true, intensity: 0.5, trigger_source: 'beats' },
+  energy_trails: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
+  light_flares: { enabled: false, intensity: 0.3, trigger_source: 'beats' },
+  glitch: { enabled: false, intensity: 0.3, trigger_source: 'onsets' },
+  ripple_wave: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
+  film_grain: { enabled: false, intensity: 0.2, trigger_source: 'beats' },
+  strobe_flash: { enabled: false, intensity: 0.3, trigger_source: 'beats' },
+  vignette_pulse: { enabled: true, intensity: 0.4, trigger_source: 'beats' },
+  background_dim: { enabled: true, intensity: 0.3, trigger_source: 'beats' },
 };
 
 // Effect metadata for UI
@@ -52,26 +74,27 @@ export interface EffectMeta {
   name: string;
   description: string;
   category: 'element' | 'particle' | 'style' | 'background';
+  supportsTriggerSource?: boolean;
 }
 
 export const EFFECT_METADATA: EffectMeta[] = [
   // Element effects
-  { key: 'element_glow', name: 'Glow Pulse', description: 'Subject emits pulsating light', category: 'element' },
-  { key: 'element_scale', name: 'Scale Pulse', description: 'Subject grows/shrinks on beats', category: 'element' },
-  { key: 'neon_outline', name: 'Neon Outline', description: 'Glowing edge around subject', category: 'element' },
+  { key: 'element_glow', name: 'Glow Pulse', description: 'Subject emits pulsating light', category: 'element', supportsTriggerSource: true },
+  { key: 'element_scale', name: 'Scale Pulse', description: 'Subject grows/shrinks on beats', category: 'element', supportsTriggerSource: true },
+  { key: 'neon_outline', name: 'Neon Outline', description: 'Glowing edge around subject', category: 'element', supportsTriggerSource: true },
   { key: 'echo_trail', name: 'Echo Trail', description: 'Ghostly afterimage effect', category: 'element' },
   
   // Particle effects
-  { key: 'particle_burst', name: 'Particle Burst', description: 'Particles explode on beats', category: 'particle' },
+  { key: 'particle_burst', name: 'Particle Burst', description: 'Particles explode on beats', category: 'particle', supportsTriggerSource: true },
   { key: 'energy_trails', name: 'Energy Trails', description: 'Glowing lines orbit subject', category: 'particle' },
-  { key: 'light_flares', name: 'Light Flares', description: 'Lens flare from bright spots', category: 'particle' },
+  { key: 'light_flares', name: 'Light Flares', description: 'Lens flare from bright spots', category: 'particle', supportsTriggerSource: true },
   
   // Style effects
-  { key: 'glitch', name: 'Glitch', description: 'RGB split and distortion', category: 'style' },
-  { key: 'ripple_wave', name: 'Ripple Wave', description: 'Distortion waves from center', category: 'style' },
+  { key: 'glitch', name: 'Glitch', description: 'RGB split and distortion', category: 'style', supportsTriggerSource: true },
+  { key: 'ripple_wave', name: 'Ripple Wave', description: 'Distortion waves from center', category: 'style', supportsTriggerSource: true },
   { key: 'film_grain', name: 'Film Grain', description: 'VHS/retro texture', category: 'style' },
-  { key: 'strobe_flash', name: 'Strobe Flash', description: 'Brief flashes on strong beats', category: 'style' },
-  { key: 'vignette_pulse', name: 'Vignette Pulse', description: 'Dark edges pulse with rhythm', category: 'style' },
+  { key: 'strobe_flash', name: 'Strobe Flash', description: 'Brief flashes on strong beats', category: 'style', supportsTriggerSource: true },
+  { key: 'vignette_pulse', name: 'Vignette Pulse', description: 'Dark edges pulse with rhythm', category: 'style', supportsTriggerSource: true },
   
   // Background
   { key: 'background_dim', name: 'Background Dim', description: 'Darken background for contrast', category: 'background' },

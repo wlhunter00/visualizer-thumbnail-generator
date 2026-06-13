@@ -7,8 +7,9 @@ import subprocess
 import json
 import numpy as np
 import librosa
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
+from scipy.signal import find_peaks
 
 
 # Cache for loaded audio to avoid reloading
@@ -29,6 +30,9 @@ class AudioFeatures:
     bass_energy: List[Tuple[float, float]]  # Low frequency energy over time
     mid_energy: List[Tuple[float, float]]  # Mid frequency energy over time
     high_energy: List[Tuple[float, float]]  # High frequency energy over time
+    low_freq_energy: List[Tuple[float, float]] = field(default_factory=list)  # Below 250 Hz (triggers)
+    mid_freq_energy: List[Tuple[float, float]] = field(default_factory=list)  # 250–3500 Hz (triggers)
+    high_freq_energy: List[Tuple[float, float]] = field(default_factory=list)  # Above 3500 Hz (triggers)
     
     # Computed metrics for AI interpretation (no BPM-based assumptions)
     onset_density: float = 0.0  # Onsets per second - indicates rhythmic activity
@@ -38,6 +42,48 @@ class AudioFeatures:
     dynamic_range: float = 0.0  # Difference between max and min energy
     beat_strength_variance: float = 0.0  # How much beat strengths vary
     average_energy: float = 0.0  # Overall average energy level
+
+
+def split_mel_into_bands(
+    mel_spec_norm: np.ndarray,
+    sr: int,
+    low_mid_hz: float = 250,
+    mid_high_hz: float = 3500,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split mel bins into low / mid / high band envelope values."""
+    n_mels = mel_spec_norm.shape[0]
+    mel_freqs = librosa.mel_frequencies(n_mels=n_mels, fmin=0, fmax=sr / 2)
+    low_mask = mel_freqs < low_mid_hz
+    mid_mask = (mel_freqs >= low_mid_hz) & (mel_freqs < mid_high_hz)
+    high_mask = mel_freqs >= mid_high_hz
+
+    low_values = mel_spec_norm[low_mask, :].mean(axis=0) if low_mask.any() else np.zeros(mel_spec_norm.shape[1])
+    mid_values = mel_spec_norm[mid_mask, :].mean(axis=0) if mid_mask.any() else np.zeros(mel_spec_norm.shape[1])
+    high_values = mel_spec_norm[high_mask, :].mean(axis=0) if high_mask.any() else np.zeros(mel_spec_norm.shape[1])
+
+    return low_values, mid_values, high_values
+
+
+def detect_envelope_peaks(
+    envelope: List[Tuple[float, float]],
+    threshold: float,
+    min_distance_sec: float = 0.1,
+) -> List[Tuple[float, float]]:
+    """Return (time, strength) peaks above threshold from a 0-1 envelope."""
+    if not envelope:
+        return []
+
+    times = np.array([t for t, _ in envelope])
+    values = np.array([v for _, v in envelope])
+
+    if len(times) < 2:
+        return []
+
+    avg_dt = float(np.mean(np.diff(times))) if len(times) > 1 else 0.01
+    min_distance = max(1, int(min_distance_sec / max(avg_dt, 1e-6)))
+
+    peak_indices, _ = find_peaks(values, height=threshold, distance=min_distance)
+    return [(float(times[i]), float(values[i])) for i in peak_indices]
 
 
 def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = None) -> AudioFeatures:
@@ -111,6 +157,12 @@ def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = No
     bass_energy = list(zip(times.tolist(), bass_energy_values.tolist()))
     mid_energy = list(zip(times.tolist(), mid_energy_values.tolist()))
     high_energy = list(zip(times.tolist(), high_energy_values.tolist()))
+
+    # Trigger-specific bands: low <250 Hz, mid 250–3500 Hz, high >3500 Hz
+    low_freq_values, mid_freq_values, high_freq_values = split_mel_into_bands(mel_spec_norm, sr)
+    low_freq_energy = list(zip(times.tolist(), low_freq_values.tolist()))
+    mid_freq_energy = list(zip(times.tolist(), mid_freq_values.tolist()))
+    high_freq_energy = list(zip(times.tolist(), high_freq_values.tolist()))
     
     # Compute additional metrics for AI interpretation
     # These are raw metrics - let AI interpret what they mean for effects
@@ -143,6 +195,9 @@ def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = No
         bass_energy=bass_energy,
         mid_energy=mid_energy,
         high_energy=high_energy,
+        low_freq_energy=low_freq_energy,
+        mid_freq_energy=mid_freq_energy,
+        high_freq_energy=high_freq_energy,
         onset_density=onset_density,
         average_bass=avg_bass,
         average_mid=avg_mid,

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from audio_analysis import analyze_audio
 from effect_engine import (
     EffectToggles, EffectToggle, ImageContext, SubjectBounds,
-    calculate_effect_parameters
+    calculate_effect_parameters, DEFAULT_TRIGGER_SOURCE, GLITCH_DEFAULT_TRIGGER_SOURCE,
 )
 from video_renderer import render_video, RenderSettings, AspectRatio
 
@@ -413,6 +413,11 @@ PRESETS = [
 ]
 
 
+def _demo_effect_toggle(effect_key: str, enabled: bool, intensity: float) -> EffectToggle:
+    trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if effect_key == "glitch" else DEFAULT_TRIGGER_SOURCE
+    return EffectToggle(enabled=enabled, intensity=intensity, trigger_source=trigger)
+
+
 def create_single_effect_toggles(effect_key: str) -> EffectToggles:
     """Create toggles with only one effect enabled at max intensity."""
     toggles = EffectToggles()
@@ -424,10 +429,10 @@ def create_single_effect_toggles(effect_key: str) -> EffectToggles:
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
     ]:
-        setattr(toggles, attr_name, EffectToggle(enabled=False, intensity=0.0))
+        setattr(toggles, attr_name, _demo_effect_toggle(attr_name, False, 0.0))
     
     # Enable only the target effect at max intensity
-    setattr(toggles, effect_key, EffectToggle(enabled=True, intensity=INTENSITY))
+    setattr(toggles, effect_key, _demo_effect_toggle(effect_key, True, INTENSITY))
     
     return toggles
 
@@ -443,11 +448,11 @@ def create_preset_toggles(effects_dict: dict) -> EffectToggles:
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
     ]:
-        setattr(toggles, attr_name, EffectToggle(enabled=False, intensity=0.0))
+        setattr(toggles, attr_name, _demo_effect_toggle(attr_name, False, 0.0))
     
     # Enable effects from the preset with their specified intensities
     for effect_key, intensity in effects_dict.items():
-        setattr(toggles, effect_key, EffectToggle(enabled=True, intensity=intensity))
+        setattr(toggles, effect_key, _demo_effect_toggle(effect_key, True, intensity))
     
     return toggles
 

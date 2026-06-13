@@ -5,9 +5,14 @@ No BPM-based assumptions - effects are controlled explicitly by user toggles.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Tuple, Optional
-from audio_analysis import AudioFeatures
+from typing import List, Dict, Any, Tuple, Optional, Literal
+from audio_analysis import AudioFeatures, detect_envelope_peaks
 import math
+
+TriggerSource = Literal["beats", "full", "low", "medium", "high", "onsets"]
+
+DEFAULT_TRIGGER_SOURCE: TriggerSource = "beats"
+GLITCH_DEFAULT_TRIGGER_SOURCE: TriggerSource = "onsets"
 
 
 @dataclass
@@ -15,6 +20,7 @@ class EffectToggle:
     """A single effect toggle with enabled state and intensity."""
     enabled: bool = False
     intensity: float = 0.5  # 0-1
+    trigger_source: str = "beats"
 
 
 @dataclass
@@ -32,7 +38,7 @@ class EffectToggles:
     light_flares: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3))
     
     # Style effects
-    glitch: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3))
+    glitch: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3, "onsets"))
     ripple_wave: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.4))
     film_grain: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.2))
     strobe_flash: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3))
@@ -389,6 +395,50 @@ def _hue_variance(hues: List[float]) -> float:
     return 360 - max_gap
 
 
+def build_triggers(
+    audio_features: AudioFeatures,
+    trigger_source: str,
+    intensity: float,
+    base_threshold: float = 0.3,
+    apply_threshold: bool = True,
+) -> List[Tuple[float, float]]:
+    """
+    Build (time, strength) trigger list from the selected audio source.
+
+    Args:
+        audio_features: Analyzed audio data
+        trigger_source: beats, full, low, medium, high, or onsets
+        intensity: Effect intensity (0-1), scales trigger strength
+        base_threshold: Base threshold before intensity scaling
+        apply_threshold: If False, include all events (e.g. scale pulse on every beat)
+    """
+    threshold = base_threshold * (1 - intensity) if apply_threshold else 0.0
+    triggers: List[Tuple[float, float]] = []
+
+    if trigger_source == "beats":
+        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
+            if beat_strength >= threshold:
+                triggers.append((beat_time, beat_strength * intensity))
+    elif trigger_source == "onsets":
+        for onset_time, strength in zip(audio_features.onset_times, audio_features.onset_strengths):
+            if strength >= threshold:
+                triggers.append((onset_time, strength * intensity))
+    elif trigger_source == "full":
+        for peak_time, peak_strength in detect_envelope_peaks(audio_features.energy_envelope, threshold):
+            triggers.append((peak_time, peak_strength * intensity))
+    elif trigger_source == "low":
+        for peak_time, peak_strength in detect_envelope_peaks(audio_features.low_freq_energy, threshold):
+            triggers.append((peak_time, peak_strength * intensity))
+    elif trigger_source == "medium":
+        for peak_time, peak_strength in detect_envelope_peaks(audio_features.mid_freq_energy, threshold):
+            triggers.append((peak_time, peak_strength * intensity))
+    elif trigger_source == "high":
+        for peak_time, peak_strength in detect_envelope_peaks(audio_features.high_freq_energy, threshold):
+            triggers.append((peak_time, peak_strength * intensity))
+
+    return triggers
+
+
 def calculate_effect_parameters(
     audio_features: AudioFeatures,
     toggles: EffectToggles,
@@ -420,11 +470,12 @@ def calculate_effect_parameters(
     # ========================================================================
     glow_triggers = []
     if toggles.element_glow.enabled:
-        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
-        threshold = 0.3 * (1 - toggles.element_glow.intensity)
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= threshold:
-                glow_triggers.append((beat_time, beat_strength * toggles.element_glow.intensity))
+        glow_triggers = build_triggers(
+            audio_features,
+            toggles.element_glow.trigger_source,
+            toggles.element_glow.intensity,
+            base_threshold=0.3,
+        )
     
     element_glow = ElementGlowParams(
         enabled=toggles.element_glow.enabled,
@@ -439,8 +490,12 @@ def calculate_effect_parameters(
     # ========================================================================
     scale_triggers = []
     if toggles.element_scale.enabled:
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            scale_triggers.append((beat_time, beat_strength * toggles.element_scale.intensity))
+        scale_triggers = build_triggers(
+            audio_features,
+            toggles.element_scale.trigger_source,
+            toggles.element_scale.intensity,
+            apply_threshold=False,
+        )
     
     element_scale = ElementScaleParams(
         enabled=toggles.element_scale.enabled,
@@ -455,11 +510,12 @@ def calculate_effect_parameters(
     # ========================================================================
     outline_triggers = []
     if toggles.neon_outline.enabled:
-        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
-        threshold = 0.4 * (1 - toggles.neon_outline.intensity)
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= threshold:
-                outline_triggers.append((beat_time, beat_strength * toggles.neon_outline.intensity))
+        outline_triggers = build_triggers(
+            audio_features,
+            toggles.neon_outline.trigger_source,
+            toggles.neon_outline.intensity,
+            base_threshold=0.4,
+        )
     
     # Use a contrasting color for outline
     outline_color = colors_rgb[1] if len(colors_rgb) > 1 else (0, 255, 255)
@@ -489,14 +545,12 @@ def calculate_effect_parameters(
     # ========================================================================
     burst_triggers = []
     if toggles.particle_burst.enabled:
-        # Lower base threshold so bursts trigger at all intensity levels
-        # At 0% intensity: threshold = 0.4 (only strongest beats)
-        # At 50% intensity: threshold = 0.2 (moderate beats)
-        # At 100% intensity: threshold = 0 (all beats)
-        threshold = 0.4 * (1 - toggles.particle_burst.intensity)
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= threshold:
-                burst_triggers.append((beat_time, beat_strength * toggles.particle_burst.intensity))
+        burst_triggers = build_triggers(
+            audio_features,
+            toggles.particle_burst.trigger_source,
+            toggles.particle_burst.intensity,
+            base_threshold=0.4,
+        )
     
     # Prepare particle colors - boost saturation/brightness for visibility
     particle_colors = prepare_particle_colors(colors_rgb[:5])
@@ -540,11 +594,12 @@ def calculate_effect_parameters(
     # ========================================================================
     flare_triggers = []
     if toggles.light_flares.enabled:
-        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
-        threshold = 0.6 * (1 - toggles.light_flares.intensity)
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= threshold:
-                flare_triggers.append((beat_time, beat_strength * toggles.light_flares.intensity))
+        flare_triggers = build_triggers(
+            audio_features,
+            toggles.light_flares.trigger_source,
+            toggles.light_flares.intensity,
+            base_threshold=0.6,
+        )
     
     flare_points = [(gp.x, gp.y) for gp in ctx.glow_points] if ctx.glow_points else [(bounds.center_x, bounds.center_y)]
     
@@ -563,24 +618,27 @@ def calculate_effect_parameters(
     glitch_triggers = []
     if toggles.glitch.enabled:
         intensity = toggles.glitch.intensity
-        # Threshold scales inversely with intensity: at 100% intensity, all onsets trigger
-        threshold = 0.5 * (1 - intensity)
-        
-        # Trigger on onset events
-        for onset_time, strength in zip(audio_features.onset_times, audio_features.onset_strengths):
-            if strength >= threshold:
-                # Longer glitch duration at higher intensities
-                glitch_duration = 0.08 + strength * 0.15 + intensity * 0.12
-                glitch_triggers.append((onset_time, glitch_duration, strength * intensity))
-        
-        # At high intensity, also trigger on beats for more frequent glitching
-        if intensity > 0.5:
-            beat_threshold = 0.4 * (1 - intensity)
-            for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-                if beat_strength >= beat_threshold:
-                    glitch_duration = 0.06 + beat_strength * 0.1 + intensity * 0.08
-                    # Slightly lower intensity for beat-triggered glitches to vary the effect
-                    glitch_triggers.append((beat_time, glitch_duration, beat_strength * intensity * 0.8))
+        source_triggers = build_triggers(
+            audio_features,
+            toggles.glitch.trigger_source,
+            intensity,
+            base_threshold=0.5,
+        )
+        for trigger_time, strength in source_triggers:
+            glitch_duration = 0.08 + strength * 0.15 + intensity * 0.12
+            glitch_triggers.append((trigger_time, glitch_duration, strength))
+
+        # At high intensity with onsets, also trigger on beats for more frequent glitching
+        if toggles.glitch.trigger_source == "onsets" and intensity > 0.5:
+            beat_triggers = build_triggers(
+                audio_features,
+                "beats",
+                intensity * 0.8,
+                base_threshold=0.4,
+            )
+            for beat_time, beat_strength in beat_triggers:
+                glitch_duration = 0.06 + beat_strength * 0.1 + intensity * 0.08
+                glitch_triggers.append((beat_time, glitch_duration, beat_strength))
     
     glitch = GlitchParams(
         enabled=toggles.glitch.enabled,
@@ -598,11 +656,12 @@ def calculate_effect_parameters(
     # ========================================================================
     ripple_triggers = []
     if toggles.ripple_wave.enabled:
-        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
-        threshold = 0.5 * (1 - toggles.ripple_wave.intensity)
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= threshold:
-                ripple_triggers.append((beat_time, beat_strength * toggles.ripple_wave.intensity))
+        ripple_triggers = build_triggers(
+            audio_features,
+            toggles.ripple_wave.trigger_source,
+            toggles.ripple_wave.intensity,
+            base_threshold=0.5,
+        )
     
     ripple_wave = RippleWaveParams(
         enabled=toggles.ripple_wave.enabled,
@@ -632,11 +691,14 @@ def calculate_effect_parameters(
     # ========================================================================
     strobe_triggers = []
     if toggles.strobe_flash.enabled:
-        # Threshold scales inversely with intensity: at 100% intensity, all beats trigger
-        threshold = 0.8 * (1 - toggles.strobe_flash.intensity)
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            if beat_strength >= threshold:
-                strobe_triggers.append(beat_time)
+        strobe_triggers = [
+            t for t, _ in build_triggers(
+                audio_features,
+                toggles.strobe_flash.trigger_source,
+                toggles.strobe_flash.intensity,
+                base_threshold=0.8,
+            )
+        ]
     
     strobe_flash = StrobeFlashParams(
         enabled=toggles.strobe_flash.enabled,
@@ -651,8 +713,12 @@ def calculate_effect_parameters(
     # ========================================================================
     vignette_triggers = []
     if toggles.vignette_pulse.enabled:
-        for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
-            vignette_triggers.append((beat_time, beat_strength * toggles.vignette_pulse.intensity))
+        vignette_triggers = build_triggers(
+            audio_features,
+            toggles.vignette_pulse.trigger_source,
+            toggles.vignette_pulse.intensity,
+            apply_threshold=False,
+        )
     
     vignette_pulse = VignettePulseParams(
         enabled=toggles.vignette_pulse.enabled,
@@ -964,23 +1030,25 @@ def get_effect_value_at_time(
 def toggles_from_dict(data: Dict[str, Any]) -> EffectToggles:
     """Create EffectToggles from a dictionary (e.g., from JSON request)."""
     toggles = EffectToggles()
-    
+
     effect_names = [
         "element_glow", "element_scale", "neon_outline", "echo_trail",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
     ]
-    
+
     for name in effect_names:
         if name in data:
             effect_data = data[name]
+            default_trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if name == "glitch" else DEFAULT_TRIGGER_SOURCE
             toggle = EffectToggle(
                 enabled=effect_data.get("enabled", False),
-                intensity=effect_data.get("intensity", 0.5)
+                intensity=effect_data.get("intensity", 0.5),
+                trigger_source=effect_data.get("trigger_source", default_trigger),
             )
             setattr(toggles, name, toggle)
-    
+
     return toggles
 
 

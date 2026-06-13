@@ -159,6 +159,7 @@ class SessionData(BaseModel):
 class EffectToggleModel(BaseModel):
     enabled: bool = False
     intensity: float = 0.5
+    trigger_source: str = "beats"
 
 
 class EffectTogglesRequest(BaseModel):
