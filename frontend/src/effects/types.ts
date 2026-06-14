@@ -77,7 +77,13 @@ export interface GlitchParams {
   rgb_split: number;
   scan_lines: boolean;
   scan_line_opacity: number;
-  slice_displacement: boolean;
+  triggers: [number, number, number][];
+}
+
+export interface GlitchSliceParams {
+  enabled: boolean;
+  intensity: number;
+  slice_offset: number;
   triggers: [number, number, number][];
 }
 
@@ -135,6 +141,7 @@ export interface EffectParameters {
   energy_trails: EnergyTrailsParams;
   light_flares: LightFlaresParams;
   glitch: GlitchParams;
+  glitch_slice: GlitchSliceParams;
   ripple_wave: RippleWaveParams;
   film_grain: FilmGrainParams;
   strobe_flash: StrobeFlashParams;

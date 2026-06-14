@@ -6,7 +6,7 @@ No BPM-based assumptions - effects are controlled explicitly by user toggles.
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Tuple, Optional, Literal
-from effect_schema import EFFECT_KEYS, EFFECTS_WITH_TRIGGER_SOURCE, EFFECTS_WITH_RADIUS
+from effect_schema import EFFECT_KEYS, EFFECTS_WITH_TRIGGER_SOURCE, EFFECTS_WITH_RADIUS, GLITCH_STYLE_EFFECTS
 from audio_analysis import AudioFeatures, detect_envelope_peaks
 import math
 
@@ -39,6 +39,7 @@ class EffectToggles:
     
     # Style effects
     glitch: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3, "onsets"))
+    glitch_slice: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.4, "onsets"))
     ripple_wave: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.4))
     film_grain: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.2))
     strobe_flash: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.3))
@@ -153,15 +154,23 @@ class LightFlaresParams:
 
 @dataclass
 class GlitchParams:
-    """Parameters for glitch effect."""
+    """Parameters for chromatic glitch effect."""
     enabled: bool = False
     intensity: float = 0.3
     chromatic_aberration: float = 5.0
     rgb_split: float = 3.0
     scan_lines: bool = True
     scan_line_opacity: float = 0.1
-    slice_displacement: bool = True
-    triggers: List[Tuple[float, float, float]] = field(default_factory=list)  # (time, duration, intensity)
+    triggers: List[Tuple[float, float, float]] = field(default_factory=list)  # (time, duration, raw strength)
+
+
+@dataclass
+class GlitchSliceParams:
+    """Parameters for horizontal slice glitch effect."""
+    enabled: bool = False
+    intensity: float = 0.4
+    slice_offset: float = 8.0
+    triggers: List[Tuple[float, float, float]] = field(default_factory=list)  # (time, duration, raw strength)
 
 
 @dataclass
@@ -233,6 +242,7 @@ class EffectParameters:
     energy_trails: EnergyTrailsParams = field(default_factory=EnergyTrailsParams)
     light_flares: LightFlaresParams = field(default_factory=LightFlaresParams)
     glitch: GlitchParams = field(default_factory=GlitchParams)
+    glitch_slice: GlitchSliceParams = field(default_factory=GlitchSliceParams)
     ripple_wave: RippleWaveParams = field(default_factory=RippleWaveParams)
     film_grain: FilmGrainParams = field(default_factory=FilmGrainParams)
     strobe_flash: StrobeFlashParams = field(default_factory=StrobeFlashParams)
@@ -379,6 +389,7 @@ def build_triggers(
     intensity: float,
     base_threshold: float = 0.3,
     apply_threshold: bool = True,
+    scale_strength: bool = True,
 ) -> List[Tuple[float, float]]:
     """
     Build (time, strength) trigger list from the selected audio source.
@@ -386,7 +397,7 @@ def build_triggers(
     Args:
         audio_features: Analyzed audio data
         trigger_source: beats, full, low, medium, high, or onsets
-        intensity: Effect intensity (0-1), scales trigger strength
+        intensity: Effect intensity (0-1), scales trigger strength when scale_strength is True
         base_threshold: Base threshold before intensity scaling
         apply_threshold: If False, include all events (e.g. scale pulse on every beat)
     """
@@ -396,23 +407,63 @@ def build_triggers(
     if trigger_source == "beats":
         for beat_time, beat_strength in zip(audio_features.beat_times, audio_features.beat_strengths):
             if beat_strength >= threshold:
-                triggers.append((beat_time, beat_strength * intensity))
+                out = beat_strength * intensity if scale_strength else beat_strength
+                triggers.append((beat_time, out))
     elif trigger_source == "onsets":
         for onset_time, strength in zip(audio_features.onset_times, audio_features.onset_strengths):
             if strength >= threshold:
-                triggers.append((onset_time, strength * intensity))
+                out = strength * intensity if scale_strength else strength
+                triggers.append((onset_time, out))
     elif trigger_source == "full":
         for peak_time, peak_strength in detect_envelope_peaks(audio_features.energy_envelope, threshold):
-            triggers.append((peak_time, peak_strength * intensity))
+            out = peak_strength * intensity if scale_strength else peak_strength
+            triggers.append((peak_time, out))
     elif trigger_source == "low":
         for peak_time, peak_strength in detect_envelope_peaks(audio_features.low_freq_energy, threshold):
-            triggers.append((peak_time, peak_strength * intensity))
+            out = peak_strength * intensity if scale_strength else peak_strength
+            triggers.append((peak_time, out))
     elif trigger_source == "medium":
         for peak_time, peak_strength in detect_envelope_peaks(audio_features.mid_freq_energy, threshold):
-            triggers.append((peak_time, peak_strength * intensity))
+            out = peak_strength * intensity if scale_strength else peak_strength
+            triggers.append((peak_time, out))
     elif trigger_source == "high":
         for peak_time, peak_strength in detect_envelope_peaks(audio_features.high_freq_energy, threshold):
-            triggers.append((peak_time, peak_strength * intensity))
+            out = peak_strength * intensity if scale_strength else peak_strength
+            triggers.append((peak_time, out))
+
+    return triggers
+
+
+def build_glitch_burst_triggers(
+    audio_features: AudioFeatures,
+    trigger_source: str,
+    intensity: float,
+    base_threshold: float = 0.5,
+) -> List[Tuple[float, float, float]]:
+    """Build (time, duration, raw_strength) triggers for glitch-style effects."""
+    triggers: List[Tuple[float, float, float]] = []
+    source_triggers = build_triggers(
+        audio_features,
+        trigger_source,
+        intensity,
+        base_threshold=base_threshold,
+        scale_strength=False,
+    )
+    for trigger_time, raw_strength in source_triggers:
+        duration = max(0.1, 0.08 + raw_strength * 0.15 + intensity * 0.12)
+        triggers.append((trigger_time, duration, raw_strength))
+
+    if trigger_source == "onsets" and intensity > 0.5:
+        beat_triggers = build_triggers(
+            audio_features,
+            "beats",
+            intensity * 0.8,
+            base_threshold=0.4,
+            scale_strength=False,
+        )
+        for beat_time, beat_strength in beat_triggers:
+            duration = max(0.1, 0.06 + beat_strength * 0.1 + intensity * 0.08)
+            triggers.append((beat_time, duration, beat_strength))
 
     return triggers
 
@@ -556,42 +607,44 @@ def calculate_effect_parameters(
     )
     
     # ========================================================================
-    # GLITCH
+    # GLITCH (chromatic)
     # ========================================================================
     glitch_triggers = []
     if toggles.glitch.enabled:
-        intensity = toggles.glitch.intensity
-        source_triggers = build_triggers(
+        glitch_triggers = build_glitch_burst_triggers(
             audio_features,
             toggles.glitch.trigger_source,
-            intensity,
+            toggles.glitch.intensity,
             base_threshold=0.5,
         )
-        for trigger_time, strength in source_triggers:
-            glitch_duration = 0.08 + strength * 0.15 + intensity * 0.12
-            glitch_triggers.append((trigger_time, glitch_duration, strength))
 
-        # At high intensity with onsets, also trigger on beats for more frequent glitching
-        if toggles.glitch.trigger_source == "onsets" and intensity > 0.5:
-            beat_triggers = build_triggers(
-                audio_features,
-                "beats",
-                intensity * 0.8,
-                base_threshold=0.4,
-            )
-            for beat_time, beat_strength in beat_triggers:
-                glitch_duration = 0.06 + beat_strength * 0.1 + intensity * 0.08
-                glitch_triggers.append((beat_time, glitch_duration, beat_strength))
-    
     glitch = GlitchParams(
         enabled=toggles.glitch.enabled,
         intensity=toggles.glitch.intensity,
         chromatic_aberration=3 + toggles.glitch.intensity * 10,
         rgb_split=2 + toggles.glitch.intensity * 6,
-        scan_lines=toggles.glitch.intensity > 0.3,
+        scan_lines=toggles.glitch.intensity > 0.2,
         scan_line_opacity=0.05 + toggles.glitch.intensity * 0.1,
-        slice_displacement=toggles.glitch.intensity > 0.4,
-        triggers=glitch_triggers
+        triggers=glitch_triggers,
+    )
+
+    # ========================================================================
+    # GLITCH SLICE
+    # ========================================================================
+    slice_triggers = []
+    if toggles.glitch_slice.enabled:
+        slice_triggers = build_glitch_burst_triggers(
+            audio_features,
+            toggles.glitch_slice.trigger_source,
+            toggles.glitch_slice.intensity,
+            base_threshold=0.5,
+        )
+
+    glitch_slice = GlitchSliceParams(
+        enabled=toggles.glitch_slice.enabled,
+        intensity=toggles.glitch_slice.intensity,
+        slice_offset=2 + toggles.glitch_slice.intensity * 18,
+        triggers=slice_triggers,
     )
     
     # ========================================================================
@@ -693,6 +746,7 @@ def calculate_effect_parameters(
         energy_trails=energy_trails,
         light_flares=light_flares,
         glitch=glitch,
+        glitch_slice=glitch_slice,
         ripple_wave=ripple_wave,
         film_grain=film_grain,
         strobe_flash=strobe_flash,
@@ -762,6 +816,7 @@ def get_effect_value_at_time(
             if 0 <= dt < burst.lifetime:
                 progress = dt / burst.lifetime
                 active_bursts.append({
+                    "trigger_time": trigger_time,
                     "progress": progress,
                     "strength": strength,
                     "bounds_x": burst.bounds_x,
@@ -775,6 +830,7 @@ def get_effect_value_at_time(
             "colors": burst.colors,
             "size_range": burst.size_range,
             "speed": burst.speed,
+            "lifetime": burst.lifetime,
             "intensity": burst.intensity
         }
     else:
@@ -827,23 +883,43 @@ def get_effect_value_at_time(
     # ========================================================================
     glitch = effect_params.glitch
     if glitch.enabled:
-        glitch_active = False
-        glitch_intensity = 0
+        max_strength = 0.0
         for trigger_time, duration, strength in glitch.triggers:
             if trigger_time <= time < trigger_time + duration:
-                glitch_active = True
-                glitch_intensity = strength
-                break
+                max_strength = max(max_strength, strength)
+        glitch_active = max_strength > 0
         values["glitch_active"] = glitch_active
-        values["glitch_intensity"] = glitch_intensity
-        values["glitch_chromatic"] = glitch.chromatic_aberration * glitch_intensity if glitch_active else 0
-        values["glitch_rgb_split"] = glitch.rgb_split * glitch_intensity if glitch_active else 0
+        values["glitch_intensity"] = max_strength * glitch.intensity if glitch_active else 0
+        values["glitch_chromatic"] = glitch.chromatic_aberration * max_strength if glitch_active else 0
+        values["glitch_rgb_split"] = glitch.rgb_split * max_strength if glitch_active else 0
         values["glitch_scan_lines"] = glitch.scan_lines and glitch_active
         values["glitch_scan_opacity"] = glitch.scan_line_opacity if glitch_active else 0
-        values["glitch_slice"] = glitch.slice_displacement and glitch_active
     else:
         values["glitch_active"] = False
         values["glitch_intensity"] = 0
+
+    # ========================================================================
+    # GLITCH SLICE
+    # ========================================================================
+    glitch_slice = effect_params.glitch_slice
+    if glitch_slice.enabled:
+        max_strength = 0.0
+        active_trigger_time = 0.0
+        for trigger_time, duration, strength in glitch_slice.triggers:
+            if trigger_time <= time < trigger_time + duration:
+                if strength > max_strength:
+                    max_strength = strength
+                    active_trigger_time = trigger_time
+        slice_active = max_strength > 0
+        values["glitch_slice_active"] = slice_active
+        values["glitch_slice_intensity"] = max_strength * glitch_slice.intensity if slice_active else 0
+        values["glitch_slice_offset"] = glitch_slice.slice_offset * max_strength if slice_active else 0
+        values["glitch_slice_seed"] = active_trigger_time if slice_active else 0
+    else:
+        values["glitch_slice_active"] = False
+        values["glitch_slice_intensity"] = 0
+        values["glitch_slice_offset"] = 0
+        values["glitch_slice_seed"] = 0
     
     # ========================================================================
     # RIPPLE WAVE
@@ -964,7 +1040,7 @@ def toggles_from_dict(data: Dict[str, Any]) -> EffectToggles:
     for name in EFFECT_KEYS:
         if name in data:
             effect_data = data[name]
-            default_trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if name == "glitch" else DEFAULT_TRIGGER_SOURCE
+            default_trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if name in GLITCH_STYLE_EFFECTS else DEFAULT_TRIGGER_SOURCE
             toggle = EffectToggle(
                 enabled=effect_data.get("enabled", False),
                 intensity=effect_data.get("intensity", 0.5),
@@ -972,6 +1048,16 @@ def toggles_from_dict(data: Dict[str, Any]) -> EffectToggles:
                 radius=effect_data.get("radius"),
             )
             setattr(toggles, name, toggle)
+
+    # Migrate legacy combined glitch: high-intensity glitch implied slice displacement
+    if "glitch_slice" not in data and "glitch" in data:
+        legacy = data["glitch"]
+        if legacy.get("enabled") and legacy.get("intensity", 0) > 0.4:
+            toggles.glitch_slice = EffectToggle(
+                enabled=True,
+                intensity=legacy.get("intensity", 0.4),
+                trigger_source=legacy.get("trigger_source", GLITCH_DEFAULT_TRIGGER_SOURCE),
+            )
 
     return toggles
 
@@ -1021,7 +1107,8 @@ def legacy_settings_to_toggles(
     toggles.vignette_pulse = EffectToggle(beat_reactivity > 0.2, beat_reactivity * 0.8)
     
     # Map energy level to intensity-related effects
-    toggles.glitch = EffectToggle(energy_level > 0.7, energy_level * 0.5)
+    toggles.glitch = EffectToggle(energy_level > 0.7, energy_level * 0.5, "onsets")
+    toggles.glitch_slice = EffectToggle(energy_level > 0.8, energy_level * 0.5, "onsets")
     toggles.strobe_flash = EffectToggle(energy_level > 0.8, energy_level * 0.4)
     toggles.light_flares = EffectToggle(energy_level > 0.5, energy_level * 0.6)
     toggles.energy_trails = EffectToggle(energy_level > 0.4, energy_level * 0.5)

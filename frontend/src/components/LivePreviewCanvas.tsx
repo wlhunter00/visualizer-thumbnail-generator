@@ -79,12 +79,13 @@ export default function LivePreviewCanvas({
     drawFrame(ctx, baseCanvas, values, drawStateRef.current, time, width, height);
   }, [effectParams, width, height]);
 
-  // Static preview when paused
+  // Static preview when paused — reset particle state when toggles change
   useEffect(() => {
+    resetDrawState(drawStateRef.current);
     if (!isPlaying && imageLoaded && effectParams) {
       renderFrame(clipTime);
     }
-  }, [isPlaying, clipTime, imageLoaded, effectParams, effectToggles, renderFrame]);
+  }, [effectToggles, isPlaying, clipTime, imageLoaded, effectParams, renderFrame]);
 
   // RAF loop while playing
   useEffect(() => {

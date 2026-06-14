@@ -317,8 +317,8 @@ export default function EffectControls({
                               <div>
                                 <div className="text-[10px] text-surface-500 mt-2 mb-0.5">Reacts to</div>
                                 <TriggerSourceSelect
-                                  value={(toggle?.trigger_source ?? (effect.key === 'glitch' ? 'onsets' : 'beats')) as TriggerSource}
-                                  options={effect.key === 'glitch' ? GLITCH_TRIGGER_SOURCE_OPTIONS : TRIGGER_SOURCE_OPTIONS}
+                                  value={(toggle?.trigger_source ?? (effect.key === 'glitch' || effect.key === 'glitch_slice' ? 'onsets' : 'beats')) as TriggerSource}
+                                  options={effect.key === 'glitch' || effect.key === 'glitch_slice' ? GLITCH_TRIGGER_SOURCE_OPTIONS : TRIGGER_SOURCE_OPTIONS}
                                   onChange={(source) => handleToggleChange(effect.key, 'trigger_source', source)}
                                 />
                               </div>

@@ -51,6 +51,7 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
       const dt = time - triggerTime;
       if (dt >= 0 && dt < burst.lifetime) {
         activeBursts.push({
+          trigger_time: triggerTime,
           progress: dt / burst.lifetime,
           strength,
           bounds_x: burst.bounds_x,
@@ -66,6 +67,7 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
       colors: burst.colors,
       size_range: burst.size_range,
       speed: burst.speed,
+      lifetime: burst.lifetime,
       intensity: burst.intensity,
     };
   } else {
@@ -111,25 +113,46 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
 
   const glitch = effectParams.glitch;
   if (glitch.enabled) {
-    let glitchActive = false;
-    let glitchIntensity = 0;
+    let maxStrength = 0;
     for (const [triggerTime, duration, strength] of glitch.triggers) {
       if (time >= triggerTime && time < triggerTime + duration) {
-        glitchActive = true;
-        glitchIntensity = strength;
-        break;
+        maxStrength = Math.max(maxStrength, strength);
       }
     }
+    const glitchActive = maxStrength > 0;
     values.glitch_active = glitchActive;
-    values.glitch_intensity = glitchIntensity;
-    values.glitch_chromatic = glitchActive ? glitch.chromatic_aberration * glitchIntensity : 0;
-    values.glitch_rgb_split = glitchActive ? glitch.rgb_split * glitchIntensity : 0;
+    values.glitch_intensity = glitchActive ? maxStrength * glitch.intensity : 0;
+    values.glitch_chromatic = glitchActive ? glitch.chromatic_aberration * maxStrength : 0;
+    values.glitch_rgb_split = glitchActive ? glitch.rgb_split * maxStrength : 0;
     values.glitch_scan_lines = glitch.scan_lines && glitchActive;
     values.glitch_scan_opacity = glitchActive ? glitch.scan_line_opacity : 0;
-    values.glitch_slice = glitch.slice_displacement && glitchActive;
   } else {
     values.glitch_active = false;
     values.glitch_intensity = 0;
+  }
+
+  const glitchSlice = effectParams.glitch_slice;
+  if (glitchSlice.enabled) {
+    let maxStrength = 0;
+    let activeTriggerTime = 0;
+    for (const [triggerTime, duration, strength] of glitchSlice.triggers) {
+      if (time >= triggerTime && time < triggerTime + duration) {
+        if (strength > maxStrength) {
+          maxStrength = strength;
+          activeTriggerTime = triggerTime;
+        }
+      }
+    }
+    const sliceActive = maxStrength > 0;
+    values.glitch_slice_active = sliceActive;
+    values.glitch_slice_intensity = sliceActive ? maxStrength * glitchSlice.intensity : 0;
+    values.glitch_slice_offset = sliceActive ? glitchSlice.slice_offset * maxStrength : 0;
+    values.glitch_slice_seed = sliceActive ? activeTriggerTime : 0;
+  } else {
+    values.glitch_slice_active = false;
+    values.glitch_slice_intensity = 0;
+    values.glitch_slice_offset = 0;
+    values.glitch_slice_seed = 0;
   }
 
   const ripple = effectParams.ripple_wave;

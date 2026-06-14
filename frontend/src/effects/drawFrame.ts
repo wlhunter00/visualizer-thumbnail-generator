@@ -1,11 +1,14 @@
 import type { EffectValues } from './types';
 import type { RGB } from './colorUtils';
 import { ParticleSystem } from './particleSystem';
+import { seededSliceOffset } from './glitchUtils';
 
 export interface DrawFrameState {
   particleSystem: ParticleSystem;
   lastClipTime: number;
   noiseCanvas: HTMLCanvasElement | null;
+  glitchSnapshot: HTMLCanvasElement | null;
+  chromaticBuffer: HTMLCanvasElement | null;
 }
 
 export function createDrawState(): DrawFrameState {
@@ -13,6 +16,8 @@ export function createDrawState(): DrawFrameState {
     particleSystem: new ParticleSystem(),
     lastClipTime: -1,
     noiseCanvas: null,
+    glitchSnapshot: null,
+    chromaticBuffer: null,
   };
 }
 
@@ -189,34 +194,93 @@ function drawStrobe(ctx: CanvasRenderingContext2D, w: number, h: number, values:
   ctx.fillRect(0, 0, w, h);
 }
 
-function drawGlitch(ctx: CanvasRenderingContext2D, sourceCanvas: HTMLCanvasElement, w: number, h: number, values: EffectValues) {
+function snapshotFrame(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  state: DrawFrameState
+): HTMLCanvasElement {
+  if (!state.glitchSnapshot) {
+    state.glitchSnapshot = document.createElement('canvas');
+  }
+  const snap = state.glitchSnapshot;
+  if (snap.width !== w || snap.height !== h) {
+    snap.width = w;
+    snap.height = h;
+  }
+  const sctx = snap.getContext('2d')!;
+  sctx.drawImage(ctx.canvas, 0, 0);
+  return snap;
+}
+
+function drawChromaticGlitch(
+  ctx: CanvasRenderingContext2D,
+  snapshot: HTMLCanvasElement,
+  w: number,
+  h: number,
+  values: EffectValues,
+  state: DrawFrameState
+) {
   if (!values.glitch_active) return;
   const rgbSplit = values.glitch_rgb_split as number;
-  const scanOpacity = values.glitch_scan_opacity as number;
+  if (rgbSplit <= 0) return;
 
-  if (rgbSplit > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = 0.4;
-    ctx.drawImage(sourceCanvas, rgbSplit, 0);
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.drawImage(sourceCanvas, -rgbSplit, 0);
-    ctx.restore();
+  const offset = Math.max(2, Math.round(rgbSplit));
+  if (!state.chromaticBuffer) {
+    state.chromaticBuffer = document.createElement('canvas');
   }
-
-  if (values.glitch_slice) {
-    const sliceH = Math.floor(h / 8);
-    for (let i = 0; i < 8; i += 2) {
-      const offset = (Math.random() - 0.5) * rgbSplit * 4;
-      ctx.drawImage(sourceCanvas, 0, i * sliceH, w, sliceH, offset, i * sliceH, w, sliceH);
+  const buf = state.chromaticBuffer;
+  if (buf.width !== w || buf.height !== h) {
+    buf.width = w;
+    buf.height = h;
+  }
+  const bctx = buf.getContext('2d')!;
+  bctx.drawImage(snapshot, 0, 0);
+  const src = bctx.getImageData(0, 0, w, h);
+  const out = bctx.createImageData(w, h);
+  const srcData = src.data;
+  const outData = out.data;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const xr = Math.min(w - 1, Math.max(0, x - offset));
+      const xb = Math.min(w - 1, Math.max(0, x + offset));
+      const i = (y * w + x) * 4;
+      const ir = (y * w + xr) * 4;
+      const ib = (y * w + xb) * 4;
+      outData[i] = srcData[ir];
+      outData[i + 1] = srcData[i + 1];
+      outData[i + 2] = srcData[ib];
+      outData[i + 3] = srcData[i + 3];
     }
   }
+  bctx.putImageData(out, 0, 0);
+  ctx.drawImage(buf, 0, 0);
 
+  const scanOpacity = values.glitch_scan_opacity as number;
   if (values.glitch_scan_lines && scanOpacity > 0) {
     ctx.fillStyle = `rgba(0,0,0,${scanOpacity})`;
     for (let y = 0; y < h; y += 4) {
       ctx.fillRect(0, y, w, 2);
     }
+  }
+}
+
+function drawGlitchSlice(
+  ctx: CanvasRenderingContext2D,
+  snapshot: HTMLCanvasElement,
+  w: number,
+  h: number,
+  values: EffectValues
+) {
+  if (!values.glitch_slice_active) return;
+  const offsetPx = values.glitch_slice_offset as number;
+  const seed = values.glitch_slice_seed as number;
+  if (offsetPx <= 0) return;
+
+  const sliceH = Math.floor(h / 8);
+  for (let i = 0; i < 8; i += 2) {
+    const displacement = Math.round(seededSliceOffset(seed, i, offsetPx));
+    ctx.drawImage(snapshot, 0, i * sliceH, w, sliceH, displacement, i * sliceH, w, sliceH);
   }
 }
 
@@ -326,19 +390,19 @@ export function drawFrame(
   // Particle bursts
   const bursts = values.particle_bursts as Record<string, number>[];
   const burstParams = values.particle_burst_params as {
-    count: number; colors: RGB[]; size_range: [number, number]; speed: number; intensity: number;
+    count: number; colors: RGB[]; size_range: [number, number]; speed: number;
+    lifetime: number; intensity: number;
   } | undefined;
   if (bursts.length && burstParams) {
     for (const burst of bursts) {
-      if (burst.progress < 0.05) {
-        const key = `${clipTime}-${burst.bounds_x}-${burst.bounds_y}`;
-        state.particleSystem.spawnBurstFromBounds(
-          burst.bounds_x, burst.bounds_y, burst.bounds_w, burst.bounds_h,
-          burstParams.count, burstParams.colors, burstParams.size_range,
-          burstParams.speed, 1.0, clipTime, w, h, burst.strength,
-          key
-        );
-      }
+      const triggerTime = burst.trigger_time as number;
+      const key = `${triggerTime}-${burst.bounds_x}-${burst.bounds_y}`;
+      state.particleSystem.spawnBurstFromBounds(
+        burst.bounds_x, burst.bounds_y, burst.bounds_w, burst.bounds_h,
+        burstParams.count, burstParams.colors, burstParams.size_range,
+        burstParams.speed, burstParams.lifetime, clipTime, w, h, burst.strength,
+        key
+      );
     }
   }
 
@@ -351,7 +415,16 @@ export function drawFrame(
   drawVignette(ctx, w, h, values.vignette_strength as number);
   drawFilmGrain(ctx, state, w, h, values);
   drawStrobe(ctx, w, h, values);
-  drawGlitch(ctx, baseImage, w, h, values);
+
+  if (values.glitch_active || values.glitch_slice_active) {
+    const snapshot = snapshotFrame(ctx, w, h, state);
+    if (values.glitch_active) {
+      drawChromaticGlitch(ctx, snapshot, w, h, values, state);
+    }
+    if (values.glitch_slice_active) {
+      drawGlitchSlice(ctx, snapshot, w, h, values);
+    }
+  }
 }
 
 export function resetDrawState(state: DrawFrameState) {

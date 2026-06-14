@@ -5,6 +5,7 @@ import {
   ASPECT_RATIOS, 
   EffectToggles, 
   DEFAULT_EFFECT_TOGGLES,
+  normalizeEffectToggles,
   ImageAnalysis,
   AudioFeatures,
   RENDER_RESOLUTIONS
@@ -227,8 +228,9 @@ function MainApp({ initialSessionId }: MainAppProps) {
   
   // Handle effect toggles change
   const handleEffectTogglesChange = useCallback((toggles: EffectToggles) => {
-    setEffectToggles(toggles);
-    setSettings(s => ({ ...s, effect_toggles: toggles }));
+    const normalized = normalizeEffectToggles(toggles);
+    setEffectToggles(normalized);
+    setSettings(s => ({ ...s, effect_toggles: normalized }));
   }, []);
 
   const handleLoadPreset = useCallback((toggles: EffectToggles) => {
@@ -246,8 +248,8 @@ function MainApp({ initialSessionId }: MainAppProps) {
       const result = await autoSuggest(sessionId);
       
       // Update effect toggles with suggestions
-      setEffectToggles(result.effect_toggles);
-      setSettings(s => ({ ...s, effect_toggles: result.effect_toggles }));
+      setEffectToggles(normalizeEffectToggles(result.effect_toggles));
+      setSettings(s => ({ ...s, effect_toggles: normalizeEffectToggles(result.effect_toggles) }));
       
       // Also update image analysis if we got it
       // (auto-suggest runs image analysis if not already done)
@@ -455,7 +457,7 @@ function MainApp({ initialSessionId }: MainAppProps) {
           setExportStatusLabel(null);
           setError('Export failed. Please try again.');
         } else {
-          setTimeout(pollExportStatus, 500);
+          setTimeout(pollExportStatus, 2000);
         }
       };
       

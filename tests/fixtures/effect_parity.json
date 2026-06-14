@@ -27,6 +27,7 @@
     "energy_trails": { "enabled": false, "intensity": 0.4 },
     "light_flares": { "enabled": false, "intensity": 0.3 },
     "glitch": { "enabled": false, "intensity": 0.3, "trigger_source": "onsets" },
+    "glitch_slice": { "enabled": false, "intensity": 0.4, "trigger_source": "onsets" },
     "ripple_wave": { "enabled": false, "intensity": 0.4 },
     "film_grain": { "enabled": false, "intensity": 0.2 },
     "strobe_flash": { "enabled": false, "intensity": 0.3 },

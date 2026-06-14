@@ -15,6 +15,7 @@ EFFECT_KEYS = (
     "energy_trails",
     "light_flares",
     "glitch",
+    "glitch_slice",
     "ripple_wave",
     "film_grain",
     "strobe_flash",
@@ -28,6 +29,7 @@ EFFECTS_WITH_TRIGGER_SOURCE = frozenset({
     "particle_burst",
     "light_flares",
     "glitch",
+    "glitch_slice",
     "ripple_wave",
     "strobe_flash",
     "vignette_pulse",
@@ -37,6 +39,9 @@ EFFECTS_WITH_RADIUS = frozenset({"background_dim"})
 
 DEFAULT_TRIGGER_BY_EFFECT: Dict[str, str] = {key: "beats" for key in EFFECT_KEYS}
 DEFAULT_TRIGGER_BY_EFFECT["glitch"] = "onsets"
+DEFAULT_TRIGGER_BY_EFFECT["glitch_slice"] = "onsets"
+
+GLITCH_STYLE_EFFECTS = frozenset({"glitch", "glitch_slice"})
 
 EFFECT_DESCRIPTIONS: Dict[str, str] = {
     "element_glow": "Subject emits pulsating light (light sources, faces, focal points)",
@@ -44,7 +49,8 @@ EFFECT_DESCRIPTIONS: Dict[str, str] = {
     "particle_burst": "Particles explode from subject (energetic, celebratory)",
     "energy_trails": "Glowing lines orbit subject (mystical, flowing)",
     "light_flares": "Lens flare from glow points (cinematic, dramatic)",
-    "glitch": "RGB split, chromatic aberration (edgy, electronic)",
+    "glitch": "Full-frame RGB split and scan lines (chromatic aberration)",
+    "glitch_slice": "Horizontal band displacement (slice glitch)",
     "ripple_wave": "Distortion waves from subject (impactful, bass-heavy)",
     "film_grain": "VHS/retro texture (nostalgic, lo-fi)",
     "strobe_flash": "Brief flashes on strong hits (intense, use sparingly)",
@@ -58,7 +64,7 @@ TRIGGER_SOURCE_DOCS = """Trigger sources (set on enabled beat-reactive effects o
 - low: below 250 Hz — sub, kick, bass
 - medium: 250 Hz–3500 Hz — vocals, snare, guitars
 - high: above 3500 Hz — cymbals, hi-hats, air
-- onsets: transients and sharp hits (glitch default; glitch only otherwise optional)"""
+- onsets: transients and sharp hits (glitch / glitch_slice default)"""
 
 
 def default_effect_toggle(effect_key: str) -> Dict[str, Any]:
@@ -77,7 +83,7 @@ def default_effect_toggle(effect_key: str) -> Dict[str, Any]:
         toggle["intensity"] = 0.3
     elif effect_key == "film_grain":
         toggle["intensity"] = 0.2
-    elif effect_key == "glitch":
+    elif effect_key in ("glitch", "glitch_slice"):
         toggle["intensity"] = 0.3
     return toggle
 
@@ -91,7 +97,7 @@ def build_prompt_effect_docs() -> str:
     for i, key in enumerate(EFFECT_KEYS, 1):
         fields = ['"enabled" (boolean)', '"intensity" (0.0-1.0)']
         if key in EFFECTS_WITH_TRIGGER_SOURCE:
-            fields.append('"trigger_source" (beats|full|low|medium|high' + ('|onsets' if key == "glitch" else '') + ')')
+            fields.append('"trigger_source" (beats|full|low|medium|high' + ('|onsets' if key in GLITCH_STYLE_EFFECTS else '') + ')')
         if key in EFFECTS_WITH_RADIUS:
             fields.append('"radius" (0.0-1.0 focus area size)')
         lines.append(f"{i}. {key} — {EFFECT_DESCRIPTIONS[key]}")
@@ -105,6 +111,7 @@ def build_example_json() -> str:
     return """{
     "ripple_wave": {"enabled": true, "intensity": 0.6, "trigger_source": "low"},
     "glitch": {"enabled": true, "intensity": 0.4, "trigger_source": "onsets"},
+    "glitch_slice": {"enabled": false, "intensity": 0.4, "trigger_source": "onsets"},
     "background_dim": {"enabled": true, "intensity": 0.4, "radius": 0.35},
     "element_glow": {"enabled": true, "intensity": 0.7, "trigger_source": "beats"},
     "element_scale": {"enabled": true, "intensity": 0.3, "trigger_source": "beats"},
@@ -136,9 +143,7 @@ def _dominant_band(audio_metrics: Dict[str, float]) -> str:
 
 
 def _heuristic_trigger(effect_key: str, audio_metrics: Dict[str, float]) -> str:
-    if effect_key == "glitch":
-        if audio_metrics.get("onset_density", 0) > 8:
-            return "onsets"
+    if effect_key in GLITCH_STYLE_EFFECTS:
         return "onsets"
 
     band = _dominant_band(audio_metrics)
@@ -187,7 +192,7 @@ def normalize_suggestion(
 
         if key in EFFECTS_WITH_TRIGGER_SOURCE:
             source = effect_data.get("trigger_source")
-            valid_sources = GLITCH_TRIGGER_SOURCES if key == "glitch" else TRIGGER_SOURCES
+            valid_sources = GLITCH_TRIGGER_SOURCES if key in GLITCH_STYLE_EFFECTS else TRIGGER_SOURCES
             if source not in valid_sources:
                 source = None
             if source is None and enabled:

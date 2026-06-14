@@ -11,6 +11,7 @@ import time
 import json
 import asyncio
 import threading
+import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -28,9 +29,24 @@ from effect_engine import (
     legacy_settings_to_toggles
 )
 from video_renderer import render_video, RenderSettings, AspectRatio
+from gpu_renderer import cuda_available, resolve_renderer, render_video_gpu
 
 # Load environment variables
 load_dotenv()
+
+
+class _SuppressStatusPollFilter(logging.Filter):
+    """Hide noisy export progress polls from uvicorn access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/generate/status" not in record.getMessage()
+
+
+def _configure_access_log_filter() -> None:
+    logging.getLogger("uvicorn.access").addFilter(_SuppressStatusPollFilter())
+
+
+_configure_access_log_filter()
 
 # Create app
 app = FastAPI(title="Beat-Reactive Video Generator", version="2.0.0")
@@ -184,6 +200,7 @@ class EffectTogglesRequest(BaseModel):
     energy_trails: Optional[EffectToggleModel] = None
     light_flares: Optional[EffectToggleModel] = None
     glitch: Optional[EffectToggleModel] = None
+    glitch_slice: Optional[EffectToggleModel] = None
     ripple_wave: Optional[EffectToggleModel] = None
     film_grain: Optional[EffectToggleModel] = None
     strobe_flash: Optional[EffectToggleModel] = None
@@ -373,7 +390,10 @@ async def upload_image(session_id: str, file: UploadFile = File(...)):
     sessions[session_id].image_path = str(image_path)
     # Reset analysis when new image uploaded
     sessions[session_id].image_analysis = None
-    
+    sessions[session_id].particle_sprite_path = None
+    sessions[session_id].effect_params_cache_key = None
+    effect_params_cache.pop(session_id, None)
+
     return {"message": "Image uploaded", "path": str(image_path)}
 
 
@@ -402,7 +422,11 @@ async def upload_audio(session_id: str, file: UploadFile = File(...)):
     sessions[session_id].audio_path = str(audio_path)
     sessions[session_id].audio_duration = duration
     sessions[session_id].end_time = min(30.0, duration)
-    
+    sessions[session_id].audio_analysis_cache = None
+    sessions[session_id].audio_analysis_cache_key = None
+    sessions[session_id].effect_params_cache_key = None
+    effect_params_cache.pop(session_id, None)
+
     return {
         "message": "Audio uploaded",
         "path": str(audio_path),
@@ -1269,7 +1293,8 @@ def generate_playbook_v2(
         "particle_burst": "Particle Burst",
         "energy_trails": "Energy Trails",
         "light_flares": "Light Flares",
-        "glitch": "Glitch",
+        "glitch": "Chromatic Glitch",
+        "glitch_slice": "Slice Glitch",
         "ripple_wave": "Ripple Wave",
         "film_grain": "Film Grain",
         "strobe_flash": "Strobe Flash",
@@ -1491,7 +1516,11 @@ def export_video_task(
                     if session_id in sessions:
                         sessions[session_id].render_progress = batch_progress
 
-            render_video(
+            renderer = resolve_renderer()
+            print(f"[export] renderer={renderer}")
+
+            render_fn = render_video_gpu if renderer == "gpu" else render_video
+            render_fn(
                 image_path=image_path,
                 audio_path=audio_path,
                 output_path=str(export_path),

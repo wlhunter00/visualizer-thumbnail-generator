@@ -1,5 +1,5 @@
 import type { AudioFeatures, EffectToggles } from '../types';
-import { buildTriggers } from './buildTriggers';
+import { buildTriggers, buildGlitchBurstTriggers } from './buildTriggers';
 import { hexToRgb, prepareParticleColors, type RGB } from './colorUtils';
 import type { EffectParameters, ImageContext } from './types';
 
@@ -43,27 +43,13 @@ export function calculateEffectParams(
     ? ctx.glow_points.map(gp => [gp.x, gp.y])
     : [[bounds.center_x, bounds.center_y]];
 
-  const glitchTriggers: [number, number, number][] = [];
-  if (toggles.glitch.enabled) {
-    const intensity = toggles.glitch.intensity;
-    const sourceTriggers = buildTriggers(
-      audioFeatures,
-      ts('glitch'),
-      intensity,
-      0.5
-    );
-    for (const [triggerTime, strength] of sourceTriggers) {
-      const glitchDuration = 0.08 + strength * 0.15 + intensity * 0.12;
-      glitchTriggers.push([triggerTime, glitchDuration, strength]);
-    }
-    if (ts('glitch') === 'onsets' && intensity > 0.5) {
-      const beatTriggers = buildTriggers(audioFeatures, 'beats', intensity * 0.8, 0.4);
-      for (const [beatTime, beatStrength] of beatTriggers) {
-        const glitchDuration = 0.06 + beatStrength * 0.1 + intensity * 0.08;
-        glitchTriggers.push([beatTime, glitchDuration, beatStrength]);
-      }
-    }
-  }
+  const glitchTriggers = toggles.glitch.enabled
+    ? buildGlitchBurstTriggers(audioFeatures, ts('glitch'), toggles.glitch.intensity, 0.5)
+    : [];
+
+  const glitchSliceTriggers = toggles.glitch_slice.enabled
+    ? buildGlitchBurstTriggers(audioFeatures, ts('glitch_slice'), toggles.glitch_slice.intensity, 0.5)
+    : [];
 
   const rippleTriggers = toggles.ripple_wave.enabled
     ? buildTriggers(audioFeatures, ts('ripple_wave'), toggles.ripple_wave.intensity, 0.5)
@@ -137,10 +123,15 @@ export function calculateEffectParams(
       intensity: toggles.glitch.intensity,
       chromatic_aberration: 3 + toggles.glitch.intensity * 10,
       rgb_split: 2 + toggles.glitch.intensity * 6,
-      scan_lines: toggles.glitch.intensity > 0.3,
+      scan_lines: toggles.glitch.intensity > 0.2,
       scan_line_opacity: 0.05 + toggles.glitch.intensity * 0.1,
-      slice_displacement: toggles.glitch.intensity > 0.4,
       triggers: glitchTriggers,
+    },
+    glitch_slice: {
+      enabled: toggles.glitch_slice.enabled,
+      intensity: toggles.glitch_slice.intensity,
+      slice_offset: 2 + toggles.glitch_slice.intensity * 18,
+      triggers: glitchSliceTriggers,
     },
     ripple_wave: {
       enabled: toggles.ripple_wave.enabled,

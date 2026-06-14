@@ -67,6 +67,25 @@ def main():
 
     print("OK — fixture runs without error")
 
+    glitch_toggles = toggles_from_dict({
+        **data["toggles"],
+        "glitch": {"enabled": True, "intensity": 0.5, "trigger_source": "onsets"},
+    })
+    glitch_params = calculate_effect_parameters(features, glitch_toggles)
+    glitch_values = get_effect_value_at_time(glitch_params, 0.35)
+    assert glitch_values.get("glitch_active") is True
+    assert (glitch_values.get("glitch_rgb_split") or 0) >= 2
+
+    slice_toggles = toggles_from_dict({
+        **data["toggles"],
+        "glitch_slice": {"enabled": True, "intensity": 0.5, "trigger_source": "onsets"},
+    })
+    slice_params = calculate_effect_parameters(features, slice_toggles)
+    slice_values = get_effect_value_at_time(slice_params, 0.35)
+    assert slice_values.get("glitch_slice_active") is True
+    assert (slice_values.get("glitch_slice_offset") or 0) >= 2
+    print("OK — glitch effects produce visible split values at onset window")
+
 
 if __name__ == "__main__":
     main()

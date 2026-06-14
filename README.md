@@ -8,7 +8,7 @@ Create professional, beat-reactive music videos from your cover art and audio in
 
 - **Simple 3-Step Flow**: Upload image → Upload audio → Edit & Export
 - **Instant Live Preview**: Adjust effect knobs and hit Play to see beat-reactive animation in the browser — no waiting for re-renders
-- **13 Customizable Effects**: Glow, scale pulse, neon outline, particles, glitch, and more
+- **14 Customizable Effects**: Glow, scale pulse, particles, chromatic glitch, slice glitch, and more
 - **AI-Powered Analysis**: Automatic image analysis and effect suggestions
 - **Visual Waveform Selection**: Drag to select exactly which part of your track to visualize
 - **Effects Demo Page**: See all effects in action before creating your own
@@ -57,7 +57,7 @@ chmod +x start.sh
 cd backend
 python generate_demos.py
 ```
-This creates 30-second demo videos for each of the 13 effects, viewable at `#/demo`.
+This creates 30-second demo videos for each of the 14 effects, viewable at `#/demo`.
 
 ## Manual Setup
 
@@ -84,7 +84,30 @@ npm run dev
 ### Live Preview vs Export
 
 - **Live preview** (step 3): Runs in your browser using a canvas renderer. Adjust effects and press Play for instant feedback. Preview is approximate — great for iterating quickly.
-- **Export**: Server-side PIL + FFmpeg renders the final video at full resolution (720p–4K). Export quality is pixel-accurate and does not require a prior "Generate" step.
+- **Export**: Server-side PIL or GPU (CUDA) + FFmpeg renders the final video at full resolution (720p–4K). When an NVIDIA GPU and PyTorch CUDA are available, export auto-selects the GPU path for faster frame rendering. Set `EXPORT_RENDERER=cpu` to force the CPU path.
+
+### GPU Export (optional)
+
+For faster exports on Windows/Linux with an NVIDIA GPU:
+
+```bash
+cd backend
+pip install -r requirements-gpu.txt
+```
+
+Export auto-selects GPU when CUDA is available (`EXPORT_RENDERER=auto`, the default). Override with:
+
+- `EXPORT_RENDERER=gpu` — require GPU (errors if CUDA unavailable)
+- `EXPORT_RENDERER=cpu` — always use PIL/CPU
+
+Run GPU parity and integration tests locally:
+
+```bash
+pip install pytest
+pytest tests/                    # unit tests pass; GPU tests skip without CUDA
+pytest tests/ -m gpu             # full GPU suite (Windows + NVIDIA)
+pytest tests/test_gpu_export_integration.py -m "gpu and integration"
+```
 
 ### Audio Analysis
 The backend uses [librosa](https://librosa.org/) to analyze your audio:
@@ -115,7 +138,8 @@ Your 3 slider settings control how audio features map to visual effects:
 - **Light Flares** - Cinematic lens flares at bright spots
 
 **Style Effects:**
-- **Glitch** - RGB split, scan lines, slice displacement
+- **Chromatic Glitch** - Full-frame RGB split and scan lines
+- **Slice Glitch** - Horizontal band displacement
 - **Ripple Wave** - Circular distortion waves on beats
 - **Film Grain** - Vintage film/VHS texture
 - **Strobe Flash** - White flashes on strongest beats
@@ -128,7 +152,7 @@ View all effects in action at `#/demo` or visit the [Effects Demo](#effects-demo
 
 ## Effects Demo
 
-The app includes a demo page showcasing all 13 effects at maximum intensity. To generate the demo videos:
+The app includes a demo page showcasing all 14 effects at maximum intensity. To generate the demo videos:
 
 ```bash
 cd backend
@@ -136,7 +160,7 @@ python generate_demos.py
 ```
 
 This will:
-- Generate 13 videos (one per effect) at 100% intensity
+- Generate 14 videos (one per effect) at 100% intensity
 - Use the demo assets from `demo-assets/` folder
 - Start audio at 1:03 for a more interesting section
 - Output to `backend/demos/` (gitignored)
@@ -145,7 +169,8 @@ This will:
 Once generated, visit `http://localhost:5173/#/demo` to view all effects.
 
 **Deep linking:** You can link directly to a specific effect:
-- `#/demo/glitch` - Glitch effect
+- `#/demo/glitch` - Chromatic glitch effect
+- `#/demo/glitch_slice` - Slice glitch effect
 - `#/demo/particle_burst` - Particle burst effect
 - `#/demo/neon_outline` - Neon outline effect
 
@@ -174,8 +199,10 @@ visualizer-thumbnail-generator/
 ├── backend/
 │   ├── main.py              # FastAPI server
 │   ├── audio_analysis.py    # librosa beat detection
-│   ├── effect_engine.py     # Audio → visual mapping (13 effects)
-│   ├── video_renderer.py    # FFmpeg video generation
+│   ├── effect_engine.py     # Audio → visual mapping (14 effects)
+│   ├── video_renderer.py    # CPU/PIL video generation
+│   ├── gpu_renderer.py      # Optional CUDA export path (PyTorch)
+│   ├── requirements-gpu.txt # torch + torchvision for GPU export
 │   ├── generate_demos.py    # Demo video generator script
 │   ├── image_analysis.py    # AI image analysis
 │   ├── demos/               # Generated demo videos (gitignored)

@@ -106,10 +106,17 @@ SINGLE_EFFECTS = [
     ),
     EffectInfo(
         key="glitch",
-        name="Glitch",
-        description="RGB split and distortion",
+        name="Chromatic Glitch",
+        description="Full-frame RGB split and scan lines",
         category="style",
-        explanation="Digital distortion with RGB color splitting, scan lines, and random slice displacement. Triggers on sharp transients for a broken, corrupted, or cyberpunk aesthetic."
+        explanation="Digital chromatic aberration across the full frame with RGB channel separation and optional scan lines. Triggers on sharp transients for a broken, corrupted, or cyberpunk aesthetic."
+    ),
+    EffectInfo(
+        key="glitch_slice",
+        name="Slice Glitch",
+        description="Horizontal band displacement",
+        category="style",
+        explanation="Shifts alternating horizontal bands sideways on beats and transients. Stack with Chromatic Glitch for layered digital distortion, or use alone for a datamosh-style slice effect."
     ),
     EffectInfo(
         key="ripple_wave",
@@ -400,7 +407,7 @@ PRESETS = [
 
 
 def _demo_effect_toggle(effect_key: str, enabled: bool, intensity: float) -> EffectToggle:
-    trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if effect_key == "glitch" else DEFAULT_TRIGGER_SOURCE
+    trigger = GLITCH_DEFAULT_TRIGGER_SOURCE if effect_key in ("glitch", "glitch_slice") else DEFAULT_TRIGGER_SOURCE
     return EffectToggle(enabled=enabled, intensity=intensity, trigger_source=trigger)
 
 
@@ -412,7 +419,7 @@ def create_single_effect_toggles(effect_key: str) -> EffectToggles:
     for attr_name in [
         "element_glow", "element_scale",
         "particle_burst", "energy_trails", "light_flares",
-        "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
+        "glitch", "glitch_slice", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
     ]:
         setattr(toggles, attr_name, _demo_effect_toggle(attr_name, False, 0.0))
@@ -431,7 +438,7 @@ def create_preset_toggles(effects_dict: dict) -> EffectToggles:
     for attr_name in [
         "element_glow", "element_scale",
         "particle_burst", "energy_trails", "light_flares",
-        "glitch", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
+        "glitch", "glitch_slice", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
     ]:
         setattr(toggles, attr_name, _demo_effect_toggle(attr_name, False, 0.0))

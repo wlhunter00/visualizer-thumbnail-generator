@@ -1,1 +1,63 @@
-[]
+[
+  {
+    "id": "9535d5ab-8a26-4875-9b09-d879fdffc591",
+    "name": "rude boy",
+    "created_at": "2026-06-13T23:51:17.437636+00:00",
+    "updated_at": "2026-06-13T23:51:17.437636+00:00",
+    "effect_toggles": {
+      "element_glow": {
+        "enabled": true,
+        "intensity": 0.32,
+        "trigger_source": "high"
+      },
+      "element_scale": {
+        "enabled": true,
+        "intensity": 0.35,
+        "trigger_source": "low"
+      },
+      "particle_burst": {
+        "enabled": true,
+        "intensity": 0.01,
+        "trigger_source": "beats"
+      },
+      "energy_trails": {
+        "enabled": true,
+        "intensity": 0.43
+      },
+      "light_flares": {
+        "enabled": false,
+        "intensity": 0.3,
+        "trigger_source": "beats"
+      },
+      "glitch": {
+        "enabled": true,
+        "intensity": 0.65,
+        "trigger_source": "onsets"
+      },
+      "ripple_wave": {
+        "enabled": false,
+        "intensity": 0.4,
+        "trigger_source": "beats"
+      },
+      "film_grain": {
+        "enabled": true,
+        "intensity": 0.26
+      },
+      "strobe_flash": {
+        "enabled": false,
+        "intensity": 0.3,
+        "trigger_source": "beats"
+      },
+      "vignette_pulse": {
+        "enabled": true,
+        "intensity": 0.2,
+        "trigger_source": "beats"
+      },
+      "background_dim": {
+        "enabled": true,
+        "intensity": 0.15,
+        "radius": 0.15
+      }
+    }
+  }
+]

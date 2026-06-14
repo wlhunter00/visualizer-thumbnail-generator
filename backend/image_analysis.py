@@ -72,6 +72,7 @@ class EffectSuggestion:
     energy_trails: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("energy_trails"))
     light_flares: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("light_flares"))
     glitch: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("glitch"))
+    glitch_slice: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("glitch_slice"))
     ripple_wave: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("ripple_wave"))
     film_grain: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("film_grain"))
     strobe_flash: Dict[str, Any] = field(default_factory=lambda: default_effect_toggle("strobe_flash"))

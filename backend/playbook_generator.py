@@ -138,7 +138,9 @@ def get_active_effects(effect_params: EffectParameters) -> List[str]:
         effects.append(f"geometric {shape_type}")
     
     if effect_params.glitch.enabled:
-        effects.append("glitch accents")
+        effects.append("chromatic glitch accents")
+    if effect_params.glitch_slice.enabled:
+        effects.append("slice glitch accents")
     
     return effects
 

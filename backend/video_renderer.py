@@ -7,13 +7,14 @@ import os
 import math
 import random
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
-from PIL import Image, ImageFilter, ImageEnhance, ImageDraw, ImageChops
+from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
 import numpy as np
 
 from effect_engine import EffectParameters, get_effect_value_at_time
@@ -42,6 +43,50 @@ PREVIEW_DIMENSIONS = {
 
 PREVIEW_REFERENCE_WIDTH = 540
 
+_nvenc_available_cache: Optional[bool] = None
+
+
+def _nvenc_available() -> bool:
+    """Check once whether FFmpeg was built with h264_nvenc."""
+    global _nvenc_available_cache
+    if _nvenc_available_cache is not None:
+        return _nvenc_available_cache
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        _nvenc_available_cache = (
+            result.returncode == 0 and "h264_nvenc" in result.stdout
+        )
+    except Exception:
+        _nvenc_available_cache = False
+    return _nvenc_available_cache
+
+
+def _ffmpeg_video_encode_args(quality: str, preview: bool) -> Tuple[List[str], str]:
+    """Return FFmpeg video encode flags and a label for logging."""
+    if preview:
+        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"], "libx264"
+
+    crf = {"low": 28, "medium": 23, "high": 18}.get(quality, 23)
+    if _nvenc_available():
+        return [
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-rc", "vbr",
+            "-cq", str(crf),
+            "-b:v", "0",
+        ], "h264_nvenc"
+
+    return [
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", str(crf),
+    ], "libx264"
+
 
 def preview_scale(width: int) -> float:
     """Scale preview-tuned pixel values to the current render width."""
@@ -56,6 +101,66 @@ class RenderSettings:
     duration: float = 30.0
     preview: bool = False
     resolution_scale: float = 1.0  # Multiplier for output resolution
+
+
+def resolve_render_dimensions(
+    render_settings: RenderSettings,
+) -> Tuple[int, int, Image.Resampling]:
+    """Return width, height, and resampling filter for the given render settings."""
+    if render_settings.preview:
+        width, height = PREVIEW_DIMENSIONS[render_settings.aspect_ratio]
+        resampling = Image.Resampling.BILINEAR
+    else:
+        base_width, base_height = ASPECT_DIMENSIONS[render_settings.aspect_ratio]
+        scale = render_settings.resolution_scale
+        width = int(base_width * scale)
+        height = int(base_height * scale)
+        width = width + (width % 2)
+        height = height + (height % 2)
+        resampling = Image.Resampling.LANCZOS
+    return width, height, resampling
+
+
+def encode_frame_sequence(
+    frame_pattern: str,
+    fps: int,
+    audio_path: str,
+    audio_start: float,
+    duration: float,
+    output_path: str,
+    render_settings: RenderSettings,
+) -> Tuple[str, float]:
+    """
+    Encode a staged JPEG frame sequence to MP4 with audio.
+
+    Returns (encoder_name, encode_elapsed_seconds).
+    """
+    video_encode_args, encoder_name = _ffmpeg_video_encode_args(
+        render_settings.quality, render_settings.preview
+    )
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-i", frame_pattern,
+        "-ss", str(audio_start),
+        "-t", str(duration),
+        "-i", audio_path,
+        *video_encode_args,
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-shortest",
+        output_path,
+    ]
+    encode_start = time.perf_counter()
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    encode_elapsed = time.perf_counter() - encode_start
+    if result.returncode != 0:
+        error_msg = result.stderr or result.stdout or "Unknown FFmpeg error"
+        raise RuntimeError(
+            f"FFmpeg failed (exit code {result.returncode}): {error_msg}"
+        )
+    return encoder_name, encode_elapsed
 
 
 @dataclass
@@ -88,19 +193,21 @@ class ParticleSystem:
         speed: float,
         lifetime: float,
         time: float,
-        width: int, height: int
+        width: int, height: int,
+        strength: float = 1.0,
     ):
         """Spawn particles from the perimeter of the subject's elliptical bounds."""
         scale = preview_scale(width)
         scaled_speed = speed * scale
         scaled_size_range = (size_range[0] * scale, size_range[1] * scale)
+        spawn_count = max(1, int(count * max(strength, 0.1)))
         # Calculate center and radii in pixels
         center_x = (bounds_x + bounds_w / 2) * width
         center_y = (bounds_y + bounds_h / 2) * height
         radius_x = (bounds_w / 2) * width * 1.1  # Slightly outside bounds
         radius_y = (bounds_h / 2) * height * 1.1
         
-        for _ in range(count):
+        for _ in range(spawn_count):
             # Random angle around the ellipse perimeter
             angle = random.random() * 2 * math.pi
             
@@ -195,19 +302,7 @@ def render_video(
         Path to the rendered video
     """
     # Get dimensions
-    if render_settings.preview:
-        width, height = PREVIEW_DIMENSIONS[render_settings.aspect_ratio]
-        resampling = Image.Resampling.BILINEAR
-    else:
-        base_width, base_height = ASPECT_DIMENSIONS[render_settings.aspect_ratio]
-        # Apply resolution scale for export (default 1.0 = 1080p base)
-        scale = render_settings.resolution_scale
-        width = int(base_width * scale)
-        height = int(base_height * scale)
-        # Ensure dimensions are even (required for video encoding)
-        width = width + (width % 2)
-        height = height + (height % 2)
-        resampling = Image.Resampling.LANCZOS
+    width, height, resampling = resolve_render_dimensions(render_settings)
     
     fps = render_settings.fps
     duration = render_settings.duration
@@ -217,260 +312,59 @@ def render_video(
     base_image = Image.open(image_path).convert("RGBA")
     base_image = fit_image_to_frame(base_image, width, height, resampling)
     
-    # Load custom particle sprite if provided
-    particle_sprite = None
-    if custom_particle_sprite and os.path.exists(custom_particle_sprite):
-        try:
-            particle_sprite = Image.open(custom_particle_sprite).convert("RGBA")
-        except Exception:
-            pass
-    
-    # Initialize systems
-    particle_system = ParticleSystem()
-    previous_bursts = set()  # Track which bursts we've already spawned
-
-    bounds_dict = {
-        "x": effect_params.subject_bounds.x,
-        "y": effect_params.subject_bounds.y,
-        "w": effect_params.subject_bounds.w,
-        "h": effect_params.subject_bounds.h,
-        "center_x": effect_params.subject_bounds.center_x,
-        "center_y": effect_params.subject_bounds.center_y,
-    }
-
-    # Precompute static background dim (parameters are constant for the whole clip)
-    background_dim_base = base_image
-    bg_dim = effect_params.background_dim
-    if bg_dim.enabled:
-        background_dim_base = apply_background_dim(
-            base_image,
-            bounds_dict,
-            bg_dim.dim_amount,
-            bg_dim.blur_amount,
-            bg_dim.focus_radius,
-            width,
-            height,
-        )
-
-    vignette_dist_sq = build_vignette_dist_sq(width, height)
-
-    if render_settings.preview:
-        crf = 28
-        preset = "ultrafast"
-    else:
-        crf = {"low": 28, "medium": 23, "high": 18}.get(render_settings.quality, 23)
-        preset = "medium"
-
-    ffmpeg_cmd = [
-        "ffmpeg", "-y",
-        "-f", "rawvideo",
-        "-pix_fmt", "rgb24",
-        "-s", f"{width}x{height}",
-        "-r", str(fps),
-        "-i", "pipe:0",
-        "-ss", str(audio_start),
-        "-t", str(duration),
-        "-i", audio_path,
-        "-c:v", "libx264",
-        "-preset", preset,
-        "-crf", str(crf),
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-shortest",
-        output_path,
-    ]
-
-    render_start = time.perf_counter()
-    ffmpeg_process = subprocess.Popen(
-        ffmpeg_cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+    frame_state = prepare_frame_render_state(
+        base_image, effect_params, width, height, resampling,
     )
 
-    try:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        frame_pattern = os.path.join(temp_dir, "frame_%06d.jpg")
+        render_start = time.perf_counter()
+
         for frame_num in range(total_frames):
             time_sec = frame_num / fps
             dt = 1.0 / fps
-            
-            # Get effect values at this time
-            effects = get_effect_value_at_time(effect_params, time_sec)
-            bounds = effects.get("subject_bounds", bounds_dict)
-            
-            # Start from precomputed background dim when enabled
-            frame = (
-                background_dim_base.copy()
-                if bg_dim.enabled
-                else base_image.copy()
+
+            if frame_num % 100 == 0:
+                elapsed = time.perf_counter() - render_start
+                print(
+                    f"[render_video] frame {frame_num}/{total_frames} "
+                    f"({elapsed:.0f}s elapsed)"
+                )
+
+            frame = render_single_frame_cpu(
+                frame_state, effect_params, time_sec, dt,
             )
-            
-            # ================================================================
-            # LAYER 2: RIPPLE WAVE DISTORTION
-            # ================================================================
-            ripples = effects.get("ripple_waves", [])
-            if ripples:
-                for ripple in ripples:
-                    frame = apply_ripple_wave(
-                        frame, ripple, width, height,
-                        effects.get("ripple_intensity", 0.5)
-                    )
-            
-            # ================================================================
-            # LAYER 3: ELEMENT SCALE
-            # ================================================================
-            scale = effects.get("element_scale", 1.0)
-            if abs(scale - 1.0) > 0.001:
-                frame = apply_element_scale(frame, bounds, scale, width, height, resampling)
-            
-            # ================================================================
-            # LAYER 4: ELEMENT GLOW
-            # ================================================================
-            glow_intensity = effects.get("element_glow_intensity", 0)
-            if glow_intensity > 0.01:
-                frame = apply_element_glow(
-                    frame, bounds,
-                    glow_intensity,
-                    effects.get("element_glow_radius", 50),
-                    effects.get("element_glow_color", (255, 200, 100)),
-                    width, height
-                )
-            
-            # ================================================================
-            # LAYER 7: PARTICLE BURST
-            # ================================================================
-            bursts = effects.get("particle_bursts", [])
-            burst_params = effects.get("particle_burst_params", {})
-            
-            # Spawn new bursts from subject perimeter
-            for i, burst in enumerate(bursts):
-                burst_id = (burst.get("bounds_x", 0.25), burst.get("bounds_y", 0.25), i)
-                if burst.get("progress", 0) < 0.1 and burst_id not in previous_bursts:
-                    previous_bursts.add(burst_id)
-                    particle_system.spawn_burst_from_bounds(
-                        bounds_x=burst.get("bounds_x", 0.25),
-                        bounds_y=burst.get("bounds_y", 0.25),
-                        bounds_w=burst.get("bounds_w", 0.5),
-                        bounds_h=burst.get("bounds_h", 0.5),
-                        count=burst_params.get("count", 50),
-                        colors=burst_params.get("colors", [(255, 255, 255), (255, 220, 180), (200, 220, 255)]),
-                        size_range=burst_params.get("size_range", (3, 12)),
-                        speed=burst_params.get("speed", 200),
-                        lifetime=burst_params.get("lifetime", 1.0),
-                        time=time_sec,
-                        width=width,
-                        height=height
-                    )
-            
-            # Update and draw particles
-            particle_system.update(time_sec, dt)
-            frame = particle_system.draw(frame, time_sec)
-            
-            # Clean up old burst IDs
-            if len(previous_bursts) > 100:
-                previous_bursts.clear()
-            
-            # ================================================================
-            # LAYER 8: ENERGY TRAILS
-            # ================================================================
-            if effects.get("energy_trails_enabled", False):
-                frame = apply_energy_trails(
-                    frame,
-                    effects.get("energy_trails_params", {}),
-                    width, height
-                )
-            
-            # ================================================================
-            # LAYER 9: LIGHT FLARES
-            # ================================================================
-            flare_intensity = effects.get("light_flares_intensity", 0)
-            if flare_intensity > 0.01:
-                frame = apply_light_flares(
-                    frame,
-                    effects.get("light_flares_points", []),
-                    flare_intensity,
-                    effects.get("light_flares_size", 100),
-                    effects.get("light_flares_colors", [(255, 255, 200)]),
-                    width, height
-                )
-            
-            # ================================================================
-            # LAYER 10: VIGNETTE
-            # ================================================================
-            vignette_strength = effects.get("vignette_strength", 0)
-            if vignette_strength > 0.01:
-                frame = apply_vignette(frame, vignette_strength, vignette_dist_sq)
-            
-            # ================================================================
-            # LAYER 11: FILM GRAIN
-            # ================================================================
-            if effects.get("film_grain_enabled", False):
-                frame = apply_film_grain(
-                    frame,
-                    effects.get("film_grain_intensity", 0.2),
-                    effects.get("film_grain_size", 1.5)
-                )
-            
-            # ================================================================
-            # LAYER 12: STROBE FLASH
-            # ================================================================
-            if effects.get("strobe_active", False):
-                frame = apply_strobe_flash(
-                    frame,
-                    effects.get("strobe_intensity", 0.5),
-                    effects.get("strobe_color", (255, 255, 255))
-                )
-            
-            # ================================================================
-            # LAYER 13: GLITCH (last — matches preview compositing order)
-            # ================================================================
-            if effects.get("glitch_active", False):
-                frame = apply_glitch(
-                    frame,
-                    effects.get("glitch_intensity", 0),
-                    effects.get("glitch_chromatic", 0),
-                    effects.get("glitch_rgb_split", 0),
-                    effects.get("glitch_scan_lines", False),
-                    effects.get("glitch_scan_opacity", 0),
-                    effects.get("glitch_slice", False),
-                    width,
-                    height,
-                )
-            
-            if ffmpeg_process.stdin is not None:
-                ffmpeg_process.stdin.write(frame.convert("RGB").tobytes())
-            
+            frame.convert("RGB").save(frame_pattern % frame_num, "JPEG", quality=95)
+
             if progress_callback:
-                progress_callback(frame_num / total_frames * 0.8)
-    finally:
-        if ffmpeg_process.stdin is not None:
-            ffmpeg_process.stdin.close()
+                progress_callback((frame_num + 1) / total_frames * 0.8)
 
-    frame_elapsed = time.perf_counter() - render_start
+        frame_elapsed = time.perf_counter() - render_start
 
-    if progress_callback:
-        progress_callback(0.85)
+        if progress_callback:
+            progress_callback(0.85)
 
-    encode_start = time.perf_counter()
-    _, stderr = ffmpeg_process.communicate()
-    encode_elapsed = time.perf_counter() - encode_start
-
-    if ffmpeg_process.returncode != 0:
-        error_msg = stderr.decode("utf-8", errors="replace") if stderr else "Unknown FFmpeg error"
-        raise RuntimeError(
-            f"FFmpeg failed (exit code {ffmpeg_process.returncode}): {error_msg}"
+        encoder_name, encode_elapsed = encode_frame_sequence(
+            frame_pattern=frame_pattern,
+            fps=fps,
+            audio_path=audio_path,
+            audio_start=audio_start,
+            duration=duration,
+            output_path=output_path,
+            render_settings=render_settings,
         )
 
     total_elapsed = time.perf_counter() - render_start
     print(
-        f"[render_video] {total_frames} frames @ {width}x{height}: "
+        f"[render_video] renderer=cpu {total_frames} frames @ {width}x{height} "
+        f"encoder={encoder_name}: "
         f"frames={frame_elapsed:.1f}s, encode={encode_elapsed:.1f}s, "
         f"total={total_elapsed:.1f}s"
     )
-    
+
     if progress_callback:
         progress_callback(1.0)
-    
+
     return output_path
 
 
@@ -842,60 +736,76 @@ def apply_light_flares(
     return Image.alpha_composite(image, overlay)
 
 
-def apply_glitch(
+def _seeded_slice_offset(seed: float, band: int, magnitude: float) -> float:
+    x = math.sin(seed * 0.001 + band * 12.9898) * 43758.5453
+    frac = x - math.floor(x)
+    return (frac - 0.5) * magnitude * 4
+
+
+def apply_chromatic_glitch(
     image: Image.Image,
-    intensity: float,
     chromatic: float,
     rgb_split: float,
     scan_lines: bool,
     scan_opacity: float,
-    slice_effect: bool,
     width: int,
     height: int,
 ) -> Image.Image:
-    """Apply glitch effects, scaled to match live preview at any resolution."""
-    if intensity < 0.05:
-        return image
-
-    result = image.copy()
+    """Full-frame RGB channel separation and optional scan lines."""
     scale = preview_scale(width)
     split_px = max(chromatic, rgb_split) * scale
-    offset = int(round(split_px))
+    offset = max(int(round(split_px)), int(round(2 * scale)))
+    if offset <= 0:
+        return image
 
-    # RGB split via screen/multiply overlays (matches frontend drawGlitch)
-    if offset > 0:
-        shifted_right = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        shifted_right.paste(result, (-offset, 0))
-        screen = ImageChops.screen(result.convert("RGB"), shifted_right.convert("RGB"))
-        result = Image.blend(result, screen.convert("RGBA"), 0.4)
+    result = image.copy().convert("RGBA")
+    r, g, b = result.convert("RGB").split()
+    alpha = result.split()[3]
 
-        shifted_left = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        shifted_left.paste(result, (offset, 0))
-        multiplied = ImageChops.multiply(result.convert("RGB"), shifted_left.convert("RGB"))
-        result = Image.blend(result, multiplied.convert("RGBA"), 0.4)
+    r_shifted = Image.new("L", (width, height), 0)
+    r_shifted.paste(r, (-offset, 0))
+    b_shifted = Image.new("L", (width, height), 0)
+    b_shifted.paste(b, (offset, 0))
 
-    # Slice displacement (matches frontend: alternating horizontal bands)
-    if slice_effect and split_px > 0:
-        slice_h = max(1, height // 8)
-        for i in range(0, 8, 2):
-            y0 = i * slice_h
-            y1 = min((i + 1) * slice_h, height)
-            displacement = int(round((random.random() - 0.5) * split_px * 4))
-            if displacement != 0:
-                slice_region = result.crop((0, y0, width, y1))
-                result.paste(slice_region, (displacement, y0))
+    merged = Image.merge("RGB", (r_shifted, g, b_shifted)).convert("RGBA")
+    merged.putalpha(alpha)
+    result = merged
 
-    # Scan lines
     if scan_lines and scan_opacity > 0.01:
         overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-        alpha = int(scan_opacity * 255)
+        alpha_val = int(scan_opacity * 255)
         line_step = max(2, int(round(4 * scale)))
         line_height = max(1, int(round(2 * scale)))
         for y in range(0, height, line_step):
-            draw.rectangle([(0, y), (width, y + line_height - 1)], fill=(0, 0, 0, alpha))
-
+            draw.rectangle([(0, y), (width, y + line_height - 1)], fill=(0, 0, 0, alpha_val))
         result = Image.alpha_composite(result, overlay)
+
+    return result
+
+
+def apply_slice_glitch(
+    image: Image.Image,
+    offset_px: float,
+    width: int,
+    height: int,
+    seed: float,
+) -> Image.Image:
+    """Horizontal band displacement on alternating slices."""
+    scale = preview_scale(width)
+    split_px = offset_px * scale
+    if split_px <= 0:
+        return image
+
+    result = image.copy()
+    slice_h = max(1, height // 8)
+    for i in range(0, 8, 2):
+        y0 = i * slice_h
+        y1 = min((i + 1) * slice_h, height)
+        displacement = int(round(_seeded_slice_offset(seed, i, split_px)))
+        if displacement != 0:
+            slice_region = result.crop((0, y0, width, y1))
+            result.paste(slice_region, (displacement, y0))
 
     return result
 
@@ -963,3 +873,197 @@ def apply_vignette(
     darkened = enhancer.enhance(0.3)
 
     return Image.composite(image, darkened, mask)
+
+
+@dataclass
+class FrameRenderState:
+    """Mutable per-export state shared across frames."""
+    base_image: Image.Image
+    background_dim_base: Image.Image
+    bg_dim_enabled: bool
+    vignette_dist_sq: np.ndarray
+    bounds_dict: Dict[str, float]
+    width: int
+    height: int
+    resampling: Image.Resampling
+    particle_system: ParticleSystem
+    previous_bursts: set
+
+
+def prepare_frame_render_state(
+    base_image: Image.Image,
+    effect_params: EffectParameters,
+    width: int,
+    height: int,
+    resampling: Image.Resampling,
+) -> FrameRenderState:
+    """Build per-export frame state (precomputed masks, particle system, etc.)."""
+    bounds_dict = {
+        "x": effect_params.subject_bounds.x,
+        "y": effect_params.subject_bounds.y,
+        "w": effect_params.subject_bounds.w,
+        "h": effect_params.subject_bounds.h,
+        "center_x": effect_params.subject_bounds.center_x,
+        "center_y": effect_params.subject_bounds.center_y,
+    }
+    background_dim_base = base_image
+    bg_dim = effect_params.background_dim
+    if bg_dim.enabled:
+        background_dim_base = apply_background_dim(
+            base_image,
+            bounds_dict,
+            bg_dim.dim_amount,
+            bg_dim.blur_amount,
+            bg_dim.focus_radius,
+            width,
+            height,
+        )
+    return FrameRenderState(
+        base_image=base_image,
+        background_dim_base=background_dim_base,
+        bg_dim_enabled=bg_dim.enabled,
+        vignette_dist_sq=build_vignette_dist_sq(width, height),
+        bounds_dict=bounds_dict,
+        width=width,
+        height=height,
+        resampling=resampling,
+        particle_system=ParticleSystem(),
+        previous_bursts=set(),
+    )
+
+
+def render_single_frame_cpu(
+    state: FrameRenderState,
+    effect_params: EffectParameters,
+    time_sec: float,
+    dt: float,
+    effects: Optional[Dict[str, Any]] = None,
+) -> Image.Image:
+    """Render one composited frame on CPU (PIL). Used by CPU export and parity tests."""
+    if effects is None:
+        effects = get_effect_value_at_time(effect_params, time_sec)
+
+    bounds = effects.get("subject_bounds", state.bounds_dict)
+    width, height = state.width, state.height
+
+    frame = (
+        state.background_dim_base.copy()
+        if state.bg_dim_enabled
+        else state.base_image.copy()
+    )
+
+    ripples = effects.get("ripple_waves", [])
+    if ripples:
+        for ripple in ripples:
+            frame = apply_ripple_wave(
+                frame, ripple, width, height,
+                effects.get("ripple_intensity", 0.5),
+            )
+
+    scale = effects.get("element_scale", 1.0)
+    if abs(scale - 1.0) > 0.001:
+        frame = apply_element_scale(
+            frame, bounds, scale, width, height, state.resampling,
+        )
+
+    glow_intensity = effects.get("element_glow_intensity", 0)
+    if glow_intensity > 0.01:
+        frame = apply_element_glow(
+            frame, bounds,
+            glow_intensity,
+            effects.get("element_glow_radius", 50),
+            effects.get("element_glow_color", (255, 200, 100)),
+            width, height,
+        )
+
+    bursts = effects.get("particle_bursts", [])
+    burst_params = effects.get("particle_burst_params", {})
+    for burst in bursts:
+        trigger_time = burst.get("trigger_time")
+        burst_id = (
+            trigger_time,
+            burst.get("bounds_x", 0.25),
+            burst.get("bounds_y", 0.25),
+        )
+        if burst_id in state.previous_bursts:
+            continue
+        state.previous_bursts.add(burst_id)
+        state.particle_system.spawn_burst_from_bounds(
+            bounds_x=burst.get("bounds_x", 0.25),
+            bounds_y=burst.get("bounds_y", 0.25),
+            bounds_w=burst.get("bounds_w", 0.5),
+            bounds_h=burst.get("bounds_h", 0.5),
+            count=burst_params.get("count", 50),
+            colors=burst_params.get(
+                "colors",
+                [(255, 255, 255), (255, 220, 180), (200, 220, 255)],
+            ),
+            size_range=burst_params.get("size_range", (3, 12)),
+            speed=burst_params.get("speed", 200),
+            lifetime=burst_params.get("lifetime", 1.0),
+            time=time_sec,
+            width=width,
+            height=height,
+            strength=burst.get("strength", 1.0),
+        )
+
+    state.particle_system.update(time_sec, dt)
+    frame = state.particle_system.draw(frame, time_sec)
+
+    if effects.get("energy_trails_enabled", False):
+        frame = apply_energy_trails(
+            frame,
+            effects.get("energy_trails_params", {}),
+            width, height,
+        )
+
+    flare_intensity = effects.get("light_flares_intensity", 0)
+    if flare_intensity > 0.01:
+        frame = apply_light_flares(
+            frame,
+            effects.get("light_flares_points", []),
+            flare_intensity,
+            effects.get("light_flares_size", 100),
+            effects.get("light_flares_colors", [(255, 255, 200)]),
+            width, height,
+        )
+
+    vignette_strength = effects.get("vignette_strength", 0)
+    if vignette_strength > 0.01:
+        frame = apply_vignette(frame, vignette_strength, state.vignette_dist_sq)
+
+    if effects.get("film_grain_enabled", False):
+        frame = apply_film_grain(
+            frame,
+            effects.get("film_grain_intensity", 0.2),
+            effects.get("film_grain_size", 1.5),
+        )
+
+    if effects.get("strobe_active", False):
+        frame = apply_strobe_flash(
+            frame,
+            effects.get("strobe_intensity", 0.5),
+            effects.get("strobe_color", (255, 255, 255)),
+        )
+
+    if effects.get("glitch_active", False):
+        frame = apply_chromatic_glitch(
+            frame,
+            effects.get("glitch_chromatic", 0),
+            effects.get("glitch_rgb_split", 0),
+            effects.get("glitch_scan_lines", False),
+            effects.get("glitch_scan_opacity", 0),
+            width,
+            height,
+        )
+
+    if effects.get("glitch_slice_active", False):
+        frame = apply_slice_glitch(
+            frame,
+            effects.get("glitch_slice_offset", 0),
+            width,
+            height,
+            effects.get("glitch_slice_seed", 0),
+        )
+
+    return frame

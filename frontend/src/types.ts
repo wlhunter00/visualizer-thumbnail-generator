@@ -42,6 +42,7 @@ export interface EffectToggles {
   
   // Style effects
   glitch: EffectToggle;
+  glitch_slice: EffectToggle;
   ripple_wave: EffectToggle;
   film_grain: EffectToggle;
   strobe_flash: EffectToggle;
@@ -58,6 +59,7 @@ export const DEFAULT_EFFECT_TOGGLES: EffectToggles = {
   energy_trails: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
   light_flares: { enabled: false, intensity: 0.3, trigger_source: 'beats' },
   glitch: { enabled: false, intensity: 0.3, trigger_source: 'onsets' },
+  glitch_slice: { enabled: false, intensity: 0.4, trigger_source: 'onsets' },
   ripple_wave: { enabled: false, intensity: 0.4, trigger_source: 'beats' },
   film_grain: { enabled: false, intensity: 0.2, trigger_source: 'beats' },
   strobe_flash: { enabled: false, intensity: 0.3, trigger_source: 'beats' },
@@ -94,7 +96,8 @@ export const EFFECT_METADATA: EffectMeta[] = [
   { key: 'light_flares', name: 'Light Flares', description: 'Lens flare from bright spots', category: 'particle', supportsTriggerSource: true },
   
   // Style effects
-  { key: 'glitch', name: 'Glitch', description: 'RGB split and distortion', category: 'style', supportsTriggerSource: true },
+  { key: 'glitch', name: 'Chromatic Glitch', description: 'Full-frame RGB split and scan lines', category: 'style', supportsTriggerSource: true },
+  { key: 'glitch_slice', name: 'Slice Glitch', description: 'Horizontal band displacement', category: 'style', supportsTriggerSource: true },
   { key: 'ripple_wave', name: 'Ripple Wave', description: 'Distortion waves from center', category: 'style', supportsTriggerSource: true },
   { key: 'film_grain', name: 'Film Grain', description: 'VHS/retro texture', category: 'style' },
   { key: 'strobe_flash', name: 'Strobe Flash', description: 'Brief flashes on strong beats', category: 'style', supportsTriggerSource: true },
@@ -103,6 +106,19 @@ export const EFFECT_METADATA: EffectMeta[] = [
   // Background
   { key: 'background_dim', name: 'Background Dim', description: 'Darken background for contrast', category: 'background', supportsRadius: true },
 ];
+
+/** Merge partial toggle data with defaults; migrate legacy combined glitch presets. */
+export function normalizeEffectToggles(raw: Partial<EffectToggles>): EffectToggles {
+  const merged = { ...DEFAULT_EFFECT_TOGGLES, ...raw };
+  if (!raw.glitch_slice && merged.glitch.enabled && merged.glitch.intensity > 0.4) {
+    merged.glitch_slice = {
+      enabled: true,
+      intensity: merged.glitch.intensity,
+      trigger_source: merged.glitch.trigger_source ?? 'onsets',
+    };
+  }
+  return merged;
+}
 
 // ============================================================================
 // Image Analysis Types

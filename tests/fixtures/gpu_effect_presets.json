@@ -1,0 +1,105 @@
+{
+  "presets": [
+    {
+      "name": "default_toggles",
+      "fixture": "effect_parity.json",
+      "description": "Default export toggles: glow, scale, particles, vignette"
+    },
+    {
+      "name": "glow_only",
+      "toggles": {
+        "element_glow": { "enabled": true, "intensity": 0.6, "trigger_source": "beats" },
+        "element_scale": { "enabled": false, "intensity": 0.3 },
+        "particle_burst": { "enabled": false, "intensity": 0.5 },
+        "vignette_pulse": { "enabled": false, "intensity": 0.4 },
+        "energy_trails": { "enabled": false, "intensity": 0.4 },
+        "light_flares": { "enabled": false, "intensity": 0.3 },
+        "glitch": { "enabled": false, "intensity": 0.3 },
+        "ripple_wave": { "enabled": false, "intensity": 0.4 },
+        "film_grain": { "enabled": false, "intensity": 0.2 },
+        "strobe_flash": { "enabled": false, "intensity": 0.3 },
+        "background_dim": { "enabled": false, "intensity": 0.3 }
+      }
+    },
+    {
+      "name": "scale_only",
+      "toggles": {
+        "element_glow": { "enabled": false, "intensity": 0.5 },
+        "element_scale": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
+        "particle_burst": { "enabled": false, "intensity": 0.5 },
+        "vignette_pulse": { "enabled": false, "intensity": 0.4 },
+        "energy_trails": { "enabled": false, "intensity": 0.4 },
+        "light_flares": { "enabled": false, "intensity": 0.3 },
+        "glitch": { "enabled": false, "intensity": 0.3 },
+        "ripple_wave": { "enabled": false, "intensity": 0.4 },
+        "film_grain": { "enabled": false, "intensity": 0.2 },
+        "strobe_flash": { "enabled": false, "intensity": 0.3 },
+        "background_dim": { "enabled": false, "intensity": 0.3 }
+      }
+    },
+    {
+      "name": "vignette_only",
+      "toggles": {
+        "element_glow": { "enabled": false, "intensity": 0.5 },
+        "element_scale": { "enabled": false, "intensity": 0.3 },
+        "particle_burst": { "enabled": false, "intensity": 0.5 },
+        "vignette_pulse": { "enabled": true, "intensity": 0.6, "trigger_source": "beats" },
+        "energy_trails": { "enabled": false, "intensity": 0.4 },
+        "light_flares": { "enabled": false, "intensity": 0.3 },
+        "glitch": { "enabled": false, "intensity": 0.3 },
+        "ripple_wave": { "enabled": false, "intensity": 0.4 },
+        "film_grain": { "enabled": false, "intensity": 0.2 },
+        "strobe_flash": { "enabled": false, "intensity": 0.3 },
+        "background_dim": { "enabled": false, "intensity": 0.3 }
+      }
+    },
+    {
+      "name": "particles_only",
+      "toggles": {
+        "element_glow": { "enabled": false, "intensity": 0.5 },
+        "element_scale": { "enabled": false, "intensity": 0.3 },
+        "particle_burst": { "enabled": true, "intensity": 0.6, "trigger_source": "beats" },
+        "vignette_pulse": { "enabled": false, "intensity": 0.4 },
+        "energy_trails": { "enabled": false, "intensity": 0.4 },
+        "light_flares": { "enabled": false, "intensity": 0.3 },
+        "glitch": { "enabled": false, "intensity": 0.3 },
+        "ripple_wave": { "enabled": false, "intensity": 0.4 },
+        "film_grain": { "enabled": false, "intensity": 0.2 },
+        "strobe_flash": { "enabled": false, "intensity": 0.3 },
+        "background_dim": { "enabled": false, "intensity": 0.3 }
+      }
+    },
+    {
+      "name": "background_dim",
+      "toggles": {
+        "element_glow": { "enabled": false, "intensity": 0.5 },
+        "element_scale": { "enabled": false, "intensity": 0.3 },
+        "particle_burst": { "enabled": false, "intensity": 0.5 },
+        "vignette_pulse": { "enabled": false, "intensity": 0.4 },
+        "energy_trails": { "enabled": false, "intensity": 0.4 },
+        "light_flares": { "enabled": false, "intensity": 0.3 },
+        "glitch": { "enabled": false, "intensity": 0.3 },
+        "ripple_wave": { "enabled": false, "intensity": 0.4 },
+        "film_grain": { "enabled": false, "intensity": 0.2 },
+        "strobe_flash": { "enabled": false, "intensity": 0.3 },
+        "background_dim": { "enabled": true, "intensity": 0.5 }
+      }
+    },
+    {
+      "name": "ripple_wave",
+      "toggles": {
+        "element_glow": { "enabled": false, "intensity": 0.5 },
+        "element_scale": { "enabled": false, "intensity": 0.3 },
+        "particle_burst": { "enabled": false, "intensity": 0.5 },
+        "vignette_pulse": { "enabled": false, "intensity": 0.4 },
+        "energy_trails": { "enabled": false, "intensity": 0.4 },
+        "light_flares": { "enabled": false, "intensity": 0.3 },
+        "glitch": { "enabled": false, "intensity": 0.3 },
+        "ripple_wave": { "enabled": true, "intensity": 0.5, "trigger_source": "beats" },
+        "film_grain": { "enabled": false, "intensity": 0.2 },
+        "strobe_flash": { "enabled": false, "intensity": 0.3 },
+        "background_dim": { "enabled": false, "intensity": 0.3 }
+      }
+    }
+  ]
+}
