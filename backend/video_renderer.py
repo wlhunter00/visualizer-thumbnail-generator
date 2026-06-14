@@ -18,6 +18,7 @@ from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
 import numpy as np
 
 from effect_engine import EffectParameters, get_effect_value_at_time
+from image_analysis import preprocess_particle_sprite
 
 
 class AspectRatio(Enum):
@@ -179,9 +180,10 @@ class Particle:
 
 class ParticleSystem:
     """Manages particle bursts."""
-    
-    def __init__(self):
+
+    def __init__(self, particle_sprite: Optional[Image.Image] = None):
         self.particles: List[Particle] = []
+        self.particle_sprite = particle_sprite
     
     def spawn_burst_from_bounds(
         self,
@@ -249,29 +251,40 @@ class ParticleSystem:
         """Draw all particles onto the image."""
         if not self.particles:
             return image
-        
+
         overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        
+
         for p in self.particles:
             age = time - p.birth_time
             progress = age / p.lifetime
-            
-            # Fade out as particle ages
             alpha = int(p.alpha * (1 - progress) * 255)
             if alpha <= 0:
                 continue
-            
-            # Shrink as particle ages
+
             size = p.size * (1 - progress * 0.5)
-            
             x, y = int(p.x), int(p.y)
-            r = int(size / 2)
-            
-            if r > 0:
-                color = (*p.color, alpha)
-                draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
-        
+            r = max(1, int(size / 2))
+            if r <= 0:
+                continue
+
+            if self.particle_sprite is not None:
+                sprite = self.particle_sprite.resize(
+                    (r * 2, r * 2), Image.Resampling.LANCZOS,
+                )
+                if sprite.mode != "RGBA":
+                    sprite = sprite.convert("RGBA")
+                alpha_mask = sprite.split()[3].point(lambda a, al=alpha: int(a * al / 255))
+                if alpha_mask.getextrema()[1] < 8:
+                    draw = ImageDraw.Draw(overlay)
+                    draw.ellipse([x - r, y - r, x + r, y + r], fill=(*p.color, alpha))
+                    continue
+                tinted = Image.new("RGBA", sprite.size, (*p.color, alpha))
+                tinted.putalpha(alpha_mask)
+                overlay.paste(tinted, (x - r, y - r), alpha_mask)
+            else:
+                draw = ImageDraw.Draw(overlay)
+                draw.ellipse([x - r, y - r, x + r, y + r], fill=(*p.color, alpha))
+
         return Image.alpha_composite(image, overlay)
 
 
@@ -314,11 +327,25 @@ def render_video(
     
     frame_state = prepare_frame_render_state(
         base_image, effect_params, width, height, resampling,
+        custom_particle_sprite=custom_particle_sprite,
+    )
+
+    burst = effect_params.particle_burst
+    sprite = frame_state.particle_system.particle_sprite
+    sprite_info = (
+        f"loaded({sprite.width}x{sprite.height})"
+        if sprite is not None
+        else ("missing" if custom_particle_sprite else "none")
+    )
+    print(
+        f"[export] particle_burst enabled={burst.enabled} "
+        f"triggers={len(burst.triggers) if burst.enabled else 0} sprite={sprite_info}"
     )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         frame_pattern = os.path.join(temp_dir, "frame_%06d.jpg")
         render_start = time.perf_counter()
+        logged_particle_frame = False
 
         for frame_num in range(total_frames):
             time_sec = frame_num / fps
@@ -334,6 +361,14 @@ def render_video(
             frame = render_single_frame_cpu(
                 frame_state, effect_params, time_sec, dt,
             )
+
+            if not logged_particle_frame and frame_state.particle_system.particles:
+                print(
+                    f"[export] frame {frame_num}: "
+                    f"particles={len(frame_state.particle_system.particles)}"
+                )
+                logged_particle_frame = True
+
             frame.convert("RGB").save(frame_pattern % frame_num, "JPEG", quality=95)
 
             if progress_callback:
@@ -623,6 +658,40 @@ def apply_element_glow(
     return Image.alpha_composite(image, glow)
 
 
+def apply_neon_outline(
+    image: Image.Image,
+    bounds: Dict[str, float],
+    intensity: float,
+    color: Tuple[int, int, int],
+    width: float,
+    glow_radius: float,
+    frame_width: int,
+    frame_height: int,
+) -> Image.Image:
+    """Draw a neon stroke around the subject bounds with blurred glow."""
+    if intensity < 0.01:
+        return image
+
+    scale = preview_scale(frame_width)
+    x = int(bounds.get("x", 0.25) * frame_width)
+    y = int(bounds.get("y", 0.25) * frame_height)
+    w = int(bounds.get("w", 0.5) * frame_width)
+    h = int(bounds.get("h", 0.5) * frame_height)
+    line_width = max(1, int(width * scale))
+    glow = glow_radius * scale
+    alpha = int(intensity * 255)
+
+    overlay = Image.new("RGBA", (frame_width, frame_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.ellipse(
+        [x, y, x + w, y + h],
+        outline=(*color, alpha),
+        width=line_width,
+    )
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=max(1, glow / 2)))
+    return Image.alpha_composite(image, overlay)
+
+
 def apply_energy_trails(
     image: Image.Image,
     params: Dict[str, Any],
@@ -751,7 +820,7 @@ def apply_chromatic_glitch(
     width: int,
     height: int,
 ) -> Image.Image:
-    """Full-frame RGB channel separation and optional scan lines."""
+    """RGB channel separation on composited frame (matches preview glitch.ts)."""
     scale = preview_scale(width)
     split_px = max(chromatic, rgb_split) * scale
     offset = max(int(round(split_px)), int(round(2 * scale)))
@@ -772,14 +841,14 @@ def apply_chromatic_glitch(
     result = merged
 
     if scan_lines and scan_opacity > 0.01:
-        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
+        scan_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(scan_overlay)
         alpha_val = int(scan_opacity * 255)
         line_step = max(2, int(round(4 * scale)))
         line_height = max(1, int(round(2 * scale)))
         for y in range(0, height, line_step):
             draw.rectangle([(0, y), (width, y + line_height - 1)], fill=(0, 0, 0, alpha_val))
-        result = Image.alpha_composite(result, overlay)
+        result = Image.alpha_composite(result, scan_overlay)
 
     return result
 
@@ -815,13 +884,20 @@ def apply_film_grain(
     intensity: float,
     grain_size: float
 ) -> Image.Image:
-    """Apply film grain texture (matches preview alpha overlay)."""
+    """Apply film grain texture with configurable grain size."""
     if intensity < 0.01:
         return image
-    
+
     width, height = image.size
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    noise = np.random.randint(0, 256, (height, width), dtype=np.uint8)
+    scale = preview_scale(width)
+    block = max(1, int(grain_size * scale))
+    small_w = max(1, width // block)
+    small_h = max(1, height // block)
+    noise_small = np.random.randint(0, 256, (small_h, small_w), dtype=np.uint8)
+    noise_img = Image.fromarray(noise_small, mode="L").resize(
+        (width, height), Image.Resampling.NEAREST,
+    )
+    noise = np.array(noise_img)
     noise_rgb = np.stack([noise, noise, noise], axis=-1)
     alpha = int(intensity * 0.25 * 255)
     noise_rgba = np.dstack([noise_rgb, np.full((height, width), alpha, dtype=np.uint8)])
@@ -890,12 +966,22 @@ class FrameRenderState:
     previous_bursts: set
 
 
+def _load_particle_sprite(path: Optional[str]) -> Optional[Image.Image]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        return preprocess_particle_sprite(Image.open(path))
+    except Exception:
+        return None
+
+
 def prepare_frame_render_state(
     base_image: Image.Image,
     effect_params: EffectParameters,
     width: int,
     height: int,
     resampling: Image.Resampling,
+    custom_particle_sprite: Optional[str] = None,
 ) -> FrameRenderState:
     """Build per-export frame state (precomputed masks, particle system, etc.)."""
     bounds_dict = {
@@ -927,7 +1013,7 @@ def prepare_frame_render_state(
         width=width,
         height=height,
         resampling=resampling,
-        particle_system=ParticleSystem(),
+        particle_system=ParticleSystem(_load_particle_sprite(custom_particle_sprite)),
         previous_bursts=set(),
     )
 
@@ -973,6 +1059,17 @@ def render_single_frame_cpu(
             glow_intensity,
             effects.get("element_glow_radius", 50),
             effects.get("element_glow_color", (255, 200, 100)),
+            width, height,
+        )
+
+    neon_intensity = effects.get("neon_outline_intensity", 0)
+    if neon_intensity > 0.01:
+        frame = apply_neon_outline(
+            frame, bounds,
+            neon_intensity,
+            effects.get("neon_outline_color", (0, 255, 255)),
+            effects.get("neon_outline_width", 3),
+            effects.get("neon_outline_glow", 15),
             width, height,
         )
 

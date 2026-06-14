@@ -11,6 +11,7 @@ GLITCH_TRIGGER_SOURCES = ("onsets", "beats", "full", "low", "medium", "high")
 EFFECT_KEYS = (
     "element_glow",
     "element_scale",
+    "neon_outline",
     "particle_burst",
     "energy_trails",
     "light_flares",
@@ -26,6 +27,7 @@ EFFECT_KEYS = (
 EFFECTS_WITH_TRIGGER_SOURCE = frozenset({
     "element_glow",
     "element_scale",
+    "neon_outline",
     "particle_burst",
     "light_flares",
     "glitch",
@@ -46,6 +48,7 @@ GLITCH_STYLE_EFFECTS = frozenset({"glitch", "glitch_slice"})
 EFFECT_DESCRIPTIONS: Dict[str, str] = {
     "element_glow": "Subject emits pulsating light (light sources, faces, focal points)",
     "element_scale": "Subject grows/shrinks with audio (subtle, adds life)",
+    "neon_outline": "Neon stroke around subject pulsing on beats (cyberpunk, edgy)",
     "particle_burst": "Particles explode from subject (energetic, celebratory)",
     "energy_trails": "Glowing lines orbit subject (mystical, flowing)",
     "light_flares": "Lens flare from glow points (cinematic, dramatic)",
@@ -81,6 +84,9 @@ def default_effect_toggle(effect_key: str) -> Dict[str, Any]:
         toggle["radius"] = 0.5
     elif effect_key == "element_scale":
         toggle["intensity"] = 0.3
+    elif effect_key == "neon_outline":
+        toggle["enabled"] = False
+        toggle["intensity"] = 0.5
     elif effect_key == "film_grain":
         toggle["intensity"] = 0.2
     elif effect_key in ("glitch", "glitch_slice"):
@@ -115,6 +121,7 @@ def build_example_json() -> str:
     "background_dim": {"enabled": true, "intensity": 0.4, "radius": 0.35},
     "element_glow": {"enabled": true, "intensity": 0.7, "trigger_source": "beats"},
     "element_scale": {"enabled": true, "intensity": 0.3, "trigger_source": "beats"},
+    "neon_outline": {"enabled": false, "intensity": 0.5, "trigger_source": "beats"},
     "particle_burst": {"enabled": true, "intensity": 0.6, "trigger_source": "beats"},
     "energy_trails": {"enabled": false, "intensity": 0.4},
     "light_flares": {"enabled": false, "intensity": 0.3, "trigger_source": "high"},

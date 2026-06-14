@@ -28,7 +28,7 @@ from effect_engine import (
     calculate_effect_parameters, toggles_from_dict, toggles_to_dict, image_context_from_dict,
     legacy_settings_to_toggles
 )
-from video_renderer import render_video, RenderSettings, AspectRatio
+from video_renderer import render_video, RenderSettings, AspectRatio, fit_image_to_frame, prepare_frame_render_state, render_single_frame_cpu, resolve_render_dimensions
 from gpu_renderer import cuda_available, resolve_renderer, render_video_gpu
 
 # Load environment variables
@@ -1414,6 +1414,63 @@ async def get_preview(session_id: str):
     return {"video_url": f"/outputs/{session_id}/preview.mp4"}
 
 
+DEBUG_RENDER = os.getenv("DEBUG_RENDER", "").lower() in ("1", "true", "yes")
+
+
+@app.get("/debug/render-frame/{session_id}")
+async def debug_render_frame(session_id: str, time: float = 0.0):
+    """Dev-only: return a single CPU-rendered PNG at preview resolution for parity tests."""
+    if not DEBUG_RENDER:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = sessions[session_id]
+    if not session.image_path:
+        raise HTTPException(status_code=400, detail="No image uploaded")
+
+    from PIL import Image
+    import io
+
+    render_settings = RenderSettings(preview=True, aspect_ratio=AspectRatio.VERTICAL)
+    width, height, resampling = resolve_render_dimensions(render_settings)
+
+    if session.effect_toggles:
+        toggles = toggles_from_dict(session.effect_toggles)
+    else:
+        toggles = legacy_settings_to_toggles(
+            session.motion_intensity / 100.0,
+            session.beat_reactivity / 100.0,
+            session.energy_level / 100.0,
+        )
+
+    start = session.start_time
+    end_time = session.end_time
+    features, _ = get_session_audio_features(session_id, session.audio_path, start, end_time)
+
+    image_context = None
+    if session.image_analysis:
+        image_context = image_context_from_dict(session.image_analysis)
+
+    effect_params, _ = get_session_effect_parameters(
+        session_id, features, toggles, image_context,
+    )
+
+    base_image = Image.open(session.image_path).convert("RGBA")
+    base_image = fit_image_to_frame(base_image, width, height, resampling)
+    frame_state = prepare_frame_render_state(
+        base_image, effect_params, width, height, resampling,
+        custom_particle_sprite=session.particle_sprite_path,
+    )
+
+    frame = render_single_frame_cpu(frame_state, effect_params, time, 1 / 30)
+    buf = io.BytesIO()
+    frame.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+
 # ============================================================================
 # Export Endpoints
 # ============================================================================
@@ -1487,7 +1544,27 @@ def export_video_task(
             f"[export] effect parameters: "
             f"{'cache hit' if params_cached else 'computed'}"
         )
-        
+
+        burst = effect_params.particle_burst
+        sprite_info = "none"
+        if particle_sprite_path and os.path.exists(particle_sprite_path):
+            try:
+                from image_analysis import preprocess_particle_sprite
+                from PIL import Image as PilImage
+                spr = preprocess_particle_sprite(PilImage.open(particle_sprite_path))
+                if spr is not None:
+                    sprite_info = f"loaded({spr.width}x{spr.height})"
+                else:
+                    sprite_info = "invalid"
+            except Exception:
+                sprite_info = "load_error"
+        elif particle_sprite_path:
+            sprite_info = "missing"
+        print(
+            f"[export] particle_burst enabled={burst.enabled} "
+            f"triggers={len(burst.triggers) if burst.enabled else 0} sprite={sprite_info}"
+        )
+
         output_dir = OUTPUT_DIR / session_id
         output_dir.mkdir(exist_ok=True)
         total_ratios = len(aspect_ratios)

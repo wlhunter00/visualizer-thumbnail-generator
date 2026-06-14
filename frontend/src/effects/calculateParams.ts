@@ -28,6 +28,10 @@ export function calculateEffectParams(
     ? buildTriggers(audioFeatures, ts('element_scale'), toggles.element_scale.intensity, 0.3, false)
     : [];
 
+  const neonTriggers = toggles.neon_outline.enabled
+    ? buildTriggers(audioFeatures, ts('neon_outline'), toggles.neon_outline.intensity, 0.3)
+    : [];
+
   const burstTriggers = toggles.particle_burst.enabled
     ? buildTriggers(audioFeatures, ts('particle_burst'), toggles.particle_burst.intensity, 0.4)
     : [];
@@ -81,6 +85,14 @@ export function calculateEffectParams(
       max_scale: 1.0 + toggles.element_scale.intensity * 0.15,
       triggers: scaleTriggers,
     },
+    neon_outline: {
+      enabled: toggles.neon_outline.enabled,
+      intensity: toggles.neon_outline.intensity,
+      color: primaryColor,
+      width: 2 + toggles.neon_outline.intensity * 4,
+      glow_radius: 10 + toggles.neon_outline.intensity * 20,
+      pulse_triggers: neonTriggers,
+    },
     particle_burst: {
       enabled: toggles.particle_burst.enabled,
       intensity: toggles.particle_burst.intensity,
@@ -121,8 +133,8 @@ export function calculateEffectParams(
     glitch: {
       enabled: toggles.glitch.enabled,
       intensity: toggles.glitch.intensity,
-      chromatic_aberration: 3 + toggles.glitch.intensity * 10,
-      rgb_split: 2 + toggles.glitch.intensity * 6,
+      chromatic_aberration: 4 + toggles.glitch.intensity * 14,
+      rgb_split: 3 + toggles.glitch.intensity * 10,
       scan_lines: toggles.glitch.intensity > 0.2,
       scan_line_opacity: 0.05 + toggles.glitch.intensity * 0.1,
       triggers: glitchTriggers,

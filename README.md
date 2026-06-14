@@ -8,7 +8,7 @@ Create professional, beat-reactive music videos from your cover art and audio in
 
 - **Simple 3-Step Flow**: Upload image → Upload audio → Edit & Export
 - **Instant Live Preview**: Adjust effect knobs and hit Play to see beat-reactive animation in the browser — no waiting for re-renders
-- **14 Customizable Effects**: Glow, scale pulse, particles, chromatic glitch, slice glitch, and more
+- **13 Customizable Effects**: Glow, neon outline, scale pulse, particles, chromatic glitch, slice glitch, and more
 - **AI-Powered Analysis**: Automatic image analysis and effect suggestions
 - **Visual Waveform Selection**: Drag to select exactly which part of your track to visualize
 - **Effects Demo Page**: See all effects in action before creating your own
@@ -83,8 +83,8 @@ npm run dev
 
 ### Live Preview vs Export
 
-- **Live preview** (step 3): Runs in your browser using a canvas renderer. Adjust effects and press Play for instant feedback. Preview is approximate — great for iterating quickly.
-- **Export**: Server-side PIL or GPU (CUDA) + FFmpeg renders the final video at full resolution (720p–4K). When an NVIDIA GPU and PyTorch CUDA are available, export auto-selects the GPU path for faster frame rendering. Set `EXPORT_RENDERER=cpu` to force the CPU path.
+- **Live preview** (step 3): Canvas renderer mirrors the export layer stack and algorithms at preview resolution (540p). What you see in preview matches export pixels (WYSIWYG) within normal canvas vs PIL tolerances.
+- **Export**: Server-side PIL or GPU (CUDA) + FFmpeg renders the final video at full resolution (720p–4K). CPU `render_single_frame_cpu` is the pixel reference; GPU uses the same layer order with PIL roundtrips for complex effects.
 
 ### GPU Export (optional)
 
@@ -109,6 +109,8 @@ pytest tests/ -m gpu             # full GPU suite (Windows + NVIDIA)
 pytest tests/test_gpu_export_integration.py -m "gpu and integration"
 ```
 
+**Debug frame endpoint** (parity testing): set `DEBUG_RENDER=1` and `GET /debug/render-frame/{session_id}?time=0.5` returns a PNG from the CPU export renderer at preview resolution.
+
 ### Audio Analysis
 The backend uses [librosa](https://librosa.org/) to analyze your audio:
 - Beat detection (kick, snare, hi-hat)
@@ -125,7 +127,7 @@ Your 3 slider settings control how audio features map to visual effects:
 | Beat Reactivity | How tightly effects sync to detected beats |
 | Energy Level | Overall mood - calm to energetic |
 
-### Available Effects (12 Total)
+### Available Effects (13 Total)
 
 **Element Effects:**
 - **Element Glow** - Pulsating light from your subject on beats
@@ -152,7 +154,7 @@ View all effects in action at `#/demo` or visit the [Effects Demo](#effects-demo
 
 ## Effects Demo
 
-The app includes a demo page showcasing all 14 effects at maximum intensity. To generate the demo videos:
+The app includes a demo page showcasing all 13 effects at maximum intensity. To generate the demo videos:
 
 ```bash
 cd backend
@@ -160,7 +162,7 @@ python generate_demos.py
 ```
 
 This will:
-- Generate 14 videos (one per effect) at 100% intensity
+- Generate 13 videos (one per effect) at 90% intensity
 - Use the demo assets from `demo-assets/` folder
 - Start audio at 1:03 for a more interesting section
 - Output to `backend/demos/` (gitignored)

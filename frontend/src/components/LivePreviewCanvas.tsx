@@ -9,6 +9,7 @@ import {
   fitImageToFrame,
 } from '../effects';
 import { createDrawState, drawFrame, resetDrawState } from '../effects/drawFrame';
+import { buildPreviewRenderState, type PreviewRenderState } from '../effects/render/previewState';
 import { useAudioPreview } from '../context/AudioPreviewContext';
 
 interface LivePreviewCanvasProps {
@@ -30,6 +31,7 @@ export default function LivePreviewCanvas({
 }: LivePreviewCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const previewStateRef = useRef<PreviewRenderState | null>(null);
   const drawStateRef = useRef(createDrawState());
   const rafRef = useRef<number | null>(null);
 
@@ -66,6 +68,22 @@ export default function LivePreviewCanvas({
     img.src = imageUrl;
   }, [imageUrl, width, height]);
 
+  // Precompute bg-dim base and vignette distance field when image/toggles change
+  useEffect(() => {
+    const baseCanvas = baseCanvasRef.current;
+    if (!baseCanvas || !effectParams) {
+      previewStateRef.current = null;
+      return;
+    }
+    previewStateRef.current = buildPreviewRenderState(
+      baseCanvas,
+      effectParams.subject_bounds,
+      effectToggles,
+      width,
+      height,
+    );
+  }, [imageLoaded, effectParams, effectToggles, width, height]);
+
   const renderFrame = useCallback((time: number) => {
     const canvas = canvasRef.current;
     const baseCanvas = baseCanvasRef.current;
@@ -76,7 +94,7 @@ export default function LivePreviewCanvas({
 
     const values = getValuesAtTime(effectParams, time);
     ctx.clearRect(0, 0, width, height);
-    drawFrame(ctx, baseCanvas, values, drawStateRef.current, time, width, height);
+    drawFrame(ctx, baseCanvas, values, drawStateRef.current, time, width, height, previewStateRef.current);
   }, [effectParams, width, height]);
 
   // Static preview when paused — reset particle state when toggles change

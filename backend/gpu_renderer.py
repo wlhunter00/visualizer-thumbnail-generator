@@ -26,6 +26,7 @@ from video_renderer import (
     apply_energy_trails,
     apply_light_flares,
     apply_film_grain,
+    apply_neon_outline,
     apply_chromatic_glitch,
     apply_slice_glitch,
     apply_ripple_wave,
@@ -145,9 +146,11 @@ def prepare_gpu_frame_render_state(
     width: int,
     height: int,
     resampling: Image.Resampling,
+    custom_particle_sprite: Optional[str] = None,
 ) -> GpuFrameRenderState:
     cpu_state = prepare_frame_render_state(
         base_image, effect_params, width, height, resampling,
+        custom_particle_sprite=custom_particle_sprite,
     )
     torch, _, _ = _import_torch()
     device = torch.device("cuda")
@@ -310,47 +313,6 @@ def _apply_strobe_gpu(frame: Any, intensity: float, color: Tuple[int, int, int])
     return _alpha_composite(frame, flash)
 
 
-def _apply_background_dim_gpu(
-    image_tensor: Any,
-    bounds: Dict[str, float],
-    dim_amount: float,
-    blur_amount: float,
-    focus_radius: float,
-    width: int,
-    height: int,
-    device: Any,
-) -> Any:
-    if dim_amount < 0.01 and blur_amount < 0.1:
-        return image_tensor
-    torch, _, _ = _import_torch()
-    bg = image_tensor.clone()
-    if blur_amount > 0.1:
-        bg = _gaussian_blur_rgba(bg, blur_amount * preview_scale(width))
-    if dim_amount > 0.01:
-        bg[..., :3] *= 1 - dim_amount
-
-    x = int(bounds.get("x", 0.25) * width)
-    y = int(bounds.get("y", 0.25) * height)
-    w = int(bounds.get("w", 0.5) * width)
-    h = int(bounds.get("h", 0.5) * height)
-    min_dim = min(w, h)
-    max_dim = max(w, h)
-    padding = int(min_dim * (0.05 + focus_radius * 0.45))
-    expand = int(max_dim * focus_radius * 0.3)
-    cx = x + w / 2.0
-    cy = y + h / 2.0
-    rx = (w + 2 * (padding + expand)) / 2.0
-    ry = (h + 2 * (padding + expand)) / 2.0
-    mask = _build_ellipse_mask_gpu(height, width, cx, cy, rx, ry, device).float()
-    mask = _gaussian_blur_rgba(
-        torch.stack([mask, mask, mask, torch.ones_like(mask)], dim=-1),
-        max(1, padding * (0.8 + focus_radius * 0.4)),
-    )[..., 0]
-    mask = mask.unsqueeze(-1)
-    out_rgb = image_tensor[..., :3] * mask + bg[..., :3] * (1 - mask)
-    return torch.cat([out_rgb, image_tensor[..., 3:4]], dim=-1)
-
-
 def render_single_frame_gpu(
     state: GpuFrameRenderState,
     effect_params: EffectParameters,
@@ -391,6 +353,19 @@ def render_single_frame_gpu(
             effects.get("element_glow_color", (255, 200, 100)),
             width, height, device,
         )
+
+    neon_intensity = effects.get("neon_outline_intensity", 0)
+    if neon_intensity > 0.01:
+        pil_frame = _tensor_to_pil_rgba(frame)
+        pil_frame = apply_neon_outline(
+            pil_frame, bounds,
+            neon_intensity,
+            effects.get("neon_outline_color", (0, 255, 255)),
+            effects.get("neon_outline_width", 3),
+            effects.get("neon_outline_glow", 15),
+            width, height,
+        )
+        frame = _pil_rgba_to_tensor(pil_frame, device)
 
     bursts = effects.get("particle_bursts", [])
     burst_params = effects.get("particle_burst_params", {})
@@ -519,6 +494,7 @@ def render_video_gpu(
 
     gpu_state = prepare_gpu_frame_render_state(
         base_image, effect_params, width, height, resampling,
+        custom_particle_sprite=custom_particle_sprite,
     )
 
     with tempfile.TemporaryDirectory() as temp_dir:

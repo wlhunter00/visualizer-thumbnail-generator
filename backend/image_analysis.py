@@ -20,6 +20,7 @@ from effect_schema import (
     normalize_suggestion,
 )
 from export_history import build_few_shot_examples_section, find_similar_exports
+from PIL import Image
 
 # Load environment variables
 load_dotenv()
@@ -201,6 +202,38 @@ Return ONLY the JSON, no other text."""
         )
 
 
+def preprocess_particle_sprite(
+    image: Image.Image,
+    black_threshold: int = 30,
+) -> Optional[Image.Image]:
+    """
+    Prepare a DALL-E particle sprite for export: black-key, crop to content, pad square.
+    Returns None if no visible pixels remain.
+    """
+    rgba = image.convert("RGBA")
+    pixels = rgba.load()
+    width, height = rgba.size
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if r < black_threshold and g < black_threshold and b < black_threshold:
+                pixels[x, y] = (0, 0, 0, 0)
+
+    bbox = rgba.getbbox()
+    if not bbox:
+        return None
+
+    cropped = rgba.crop(bbox)
+    cw, ch = cropped.size
+    side = max(cw, ch)
+    pad = max(2, int(side * 0.05))
+    square = Image.new("RGBA", (side + pad * 2, side + pad * 2), (0, 0, 0, 0))
+    ox = (square.width - cw) // 2
+    oy = (square.height - ch) // 2
+    square.paste(cropped, (ox, oy), cropped)
+    return square
+
+
 async def generate_particle_sprite(
     colors: List[str],
     style: str,
@@ -256,10 +289,15 @@ Requirements:
         result = response.json()
         image_data = result["data"][0]["b64_json"]
         
-        # Save the image
+        # Save and post-process for export (black-key, crop, pad)
         with open(output_path, "wb") as f:
             f.write(base64.b64decode(image_data))
-        
+
+        raw = Image.open(output_path).convert("RGBA")
+        processed = preprocess_particle_sprite(raw)
+        if processed is not None:
+            processed.save(output_path, format="PNG")
+
         return output_path
 
 

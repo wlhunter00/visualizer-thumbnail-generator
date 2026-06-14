@@ -44,6 +44,26 @@ export function getValuesAtTime(effectParams: EffectParameters, time: number): E
     values.element_scale = 1.0;
   }
 
+  const neon = effectParams.neon_outline;
+  if (neon.enabled) {
+    let neonIntensity = 0;
+    for (const [triggerTime, strength] of neon.pulse_triggers) {
+      const dt = time - triggerTime;
+      if (dt >= 0 && dt < 0.3) {
+        const pulse = dt < 0.05
+          ? (dt / 0.05) * strength
+          : strength * (1 - (dt - 0.05) / 0.25);
+        neonIntensity = Math.max(neonIntensity, pulse);
+      }
+    }
+    values.neon_outline_intensity = neonIntensity * neon.intensity;
+    values.neon_outline_color = neon.color;
+    values.neon_outline_width = neon.width;
+    values.neon_outline_glow = neon.glow_radius;
+  } else {
+    values.neon_outline_intensity = 0;
+  }
+
   const burst = effectParams.particle_burst;
   if (burst.enabled) {
     const activeBursts: Record<string, number>[] = [];

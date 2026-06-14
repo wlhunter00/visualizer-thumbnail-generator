@@ -33,6 +33,15 @@ export interface ElementScaleParams {
   triggers: [number, number][];
 }
 
+export interface NeonOutlineParams {
+  enabled: boolean;
+  intensity: number;
+  color: RGB;
+  width: number;
+  glow_radius: number;
+  pulse_triggers: [number, number][];
+}
+
 export interface ParticleBurstParams {
   enabled: boolean;
   intensity: number;
@@ -137,6 +146,7 @@ export interface EffectParameters {
   subject_bounds: SubjectBounds;
   element_glow: ElementGlowParams;
   element_scale: ElementScaleParams;
+  neon_outline: NeonOutlineParams;
   particle_burst: ParticleBurstParams;
   energy_trails: EnergyTrailsParams;
   light_flares: LightFlaresParams;

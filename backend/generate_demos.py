@@ -84,6 +84,13 @@ SINGLE_EFFECTS = [
         explanation="Makes your subject pulse larger on each beat, creating a breathing or pumping effect. Stronger beats cause bigger scale changes, syncing the visual impact directly to the music's energy."
     ),
     EffectInfo(
+        key="neon_outline",
+        name="Neon Outline",
+        description="Glowing stroke around subject on beats",
+        category="element",
+        explanation="A vibrant neon stroke traces your subject's silhouette, pulsing brighter on beats. Perfect for cyberpunk, synthwave, or high-contrast pop visuals."
+    ),
+    EffectInfo(
         key="particle_burst",
         name="Particle Burst",
         description="Particles explode on beats",
@@ -417,7 +424,7 @@ def create_single_effect_toggles(effect_key: str) -> EffectToggles:
     
     # Disable all effects first
     for attr_name in [
-        "element_glow", "element_scale",
+        "element_glow", "element_scale", "neon_outline",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "glitch_slice", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"
@@ -436,7 +443,7 @@ def create_preset_toggles(effects_dict: dict) -> EffectToggles:
     
     # Disable all effects first
     for attr_name in [
-        "element_glow", "element_scale",
+        "element_glow", "element_scale", "neon_outline",
         "particle_burst", "energy_trails", "light_flares",
         "glitch", "glitch_slice", "ripple_wave", "film_grain", "strobe_flash", "vignette_pulse",
         "background_dim"

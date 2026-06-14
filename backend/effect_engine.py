@@ -31,6 +31,7 @@ class EffectToggles:
     # Element effects
     element_glow: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.5))
     element_scale: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.3))
+    neon_outline: EffectToggle = field(default_factory=lambda: EffectToggle(False, 0.5))
     
     # Particle effects
     particle_burst: EffectToggle = field(default_factory=lambda: EffectToggle(True, 0.5))
@@ -105,6 +106,17 @@ class ElementScaleParams:
     base_scale: float = 1.0
     max_scale: float = 1.1
     triggers: List[Tuple[float, float]] = field(default_factory=list)  # (time, strength)
+
+
+@dataclass
+class NeonOutlineParams:
+    """Parameters for neon outline effect."""
+    enabled: bool = False
+    intensity: float = 0.5
+    color: Tuple[int, int, int] = (0, 255, 255)
+    width: float = 3.0
+    glow_radius: float = 15.0
+    pulse_triggers: List[Tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -238,6 +250,7 @@ class EffectParameters:
     # All 11 effects
     element_glow: ElementGlowParams = field(default_factory=ElementGlowParams)
     element_scale: ElementScaleParams = field(default_factory=ElementScaleParams)
+    neon_outline: NeonOutlineParams = field(default_factory=NeonOutlineParams)
     particle_burst: ParticleBurstParams = field(default_factory=ParticleBurstParams)
     energy_trails: EnergyTrailsParams = field(default_factory=EnergyTrailsParams)
     light_flares: LightFlaresParams = field(default_factory=LightFlaresParams)
@@ -535,6 +548,27 @@ def calculate_effect_parameters(
     )
     
     # ========================================================================
+    # NEON OUTLINE
+    # ========================================================================
+    neon_triggers = []
+    if toggles.neon_outline.enabled:
+        neon_triggers = build_triggers(
+            audio_features,
+            toggles.neon_outline.trigger_source,
+            toggles.neon_outline.intensity,
+            base_threshold=0.3,
+        )
+    
+    neon_outline = NeonOutlineParams(
+        enabled=toggles.neon_outline.enabled,
+        intensity=toggles.neon_outline.intensity,
+        color=primary_color,
+        width=2 + toggles.neon_outline.intensity * 4,
+        glow_radius=10 + toggles.neon_outline.intensity * 20,
+        pulse_triggers=neon_triggers,
+    )
+    
+    # ========================================================================
     # PARTICLE BURST
     # ========================================================================
     burst_triggers = []
@@ -621,8 +655,8 @@ def calculate_effect_parameters(
     glitch = GlitchParams(
         enabled=toggles.glitch.enabled,
         intensity=toggles.glitch.intensity,
-        chromatic_aberration=3 + toggles.glitch.intensity * 10,
-        rgb_split=2 + toggles.glitch.intensity * 6,
+        chromatic_aberration=4 + toggles.glitch.intensity * 14,
+        rgb_split=3 + toggles.glitch.intensity * 10,
         scan_lines=toggles.glitch.intensity > 0.2,
         scan_line_opacity=0.05 + toggles.glitch.intensity * 0.1,
         triggers=glitch_triggers,
@@ -742,6 +776,7 @@ def calculate_effect_parameters(
         subject_bounds=bounds,
         element_glow=element_glow,
         element_scale=element_scale,
+        neon_outline=neon_outline,
         particle_burst=particle_burst,
         energy_trails=energy_trails,
         light_flares=light_flares,
@@ -803,6 +838,27 @@ def get_effect_value_at_time(
         values["element_scale"] = current_scale
     else:
         values["element_scale"] = 1.0
+    
+    # ========================================================================
+    # NEON OUTLINE
+    # ========================================================================
+    neon = effect_params.neon_outline
+    if neon.enabled:
+        neon_intensity = 0.0
+        for trigger_time, strength in neon.pulse_triggers:
+            dt = time - trigger_time
+            if 0 <= dt < 0.3:
+                if dt < 0.05:
+                    pulse = (dt / 0.05) * strength
+                else:
+                    pulse = strength * (1 - (dt - 0.05) / 0.25)
+                neon_intensity = max(neon_intensity, pulse)
+        values["neon_outline_intensity"] = neon_intensity * neon.intensity
+        values["neon_outline_color"] = neon.color
+        values["neon_outline_width"] = neon.width
+        values["neon_outline_glow"] = neon.glow_radius
+    else:
+        values["neon_outline_intensity"] = 0
     
     # ========================================================================
     # PARTICLE BURST
