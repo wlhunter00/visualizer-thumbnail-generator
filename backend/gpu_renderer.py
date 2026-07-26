@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import time
-import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -17,8 +16,8 @@ from PIL import Image
 from effect_engine import EffectParameters, get_effect_value_at_time
 from video_renderer import (
     FrameRenderState,
+    RawFramePipeEncoder,
     RenderSettings,
-    encode_frame_sequence,
     fit_image_to_frame,
     prepare_frame_render_state,
     preview_scale,
@@ -73,10 +72,23 @@ def resolve_renderer(mode: Optional[str] = None) -> str:
         return "cpu"
     if mode == "gpu":
         if not cuda_available():
-            raise RuntimeError("EXPORT_RENDERER=gpu but CUDA is not available")
+            raise RuntimeError(
+                "EXPORT_RENDERER=gpu but CUDA is not available. "
+                "Install CUDA PyTorch: pip install -r requirements-gpu.txt "
+                "(use the CUDA wheel index from https://pytorch.org)"
+            )
         return "gpu"
     if mode == "auto":
-        return "gpu" if cuda_available() else "cpu"
+        if cuda_available():
+            return "gpu"
+        # Distinguish missing torch vs CPU-only torch for clearer logs.
+        try:
+            import torch  # noqa: F401
+            reason = "torch installed but CUDA unavailable (CPU-only wheel?)"
+        except ImportError:
+            reason = "torch not installed (pip install -r requirements-gpu.txt)"
+        print(f"[export] renderer=cpu ({reason})")
+        return "cpu"
     raise ValueError(f"Invalid EXPORT_RENDERER={mode!r}; use auto, cpu, or gpu")
 
 
@@ -497,10 +509,19 @@ def render_video_gpu(
         custom_particle_sprite=custom_particle_sprite,
     )
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        frame_pattern = os.path.join(temp_dir, "frame_%06d.jpg")
-        render_start = time.perf_counter()
+    render_start = time.perf_counter()
+    encoder = RawFramePipeEncoder(
+        width=width,
+        height=height,
+        fps=fps,
+        audio_path=audio_path,
+        audio_start=audio_start,
+        duration=duration,
+        output_path=output_path,
+        render_settings=render_settings,
+    )
 
+    try:
         for frame_num in range(total_frames):
             time_sec = frame_num / fps
             dt = 1.0 / fps
@@ -515,25 +536,18 @@ def render_video_gpu(
             frame = render_single_frame_gpu(
                 gpu_state, effect_params, time_sec, dt,
             )
-            frame.convert("RGB").save(frame_pattern % frame_num, "JPEG", quality=95)
+            encoder.write_frame(frame)
 
             if progress_callback:
-                progress_callback((frame_num + 1) / total_frames * 0.8)
-
-        frame_elapsed = time.perf_counter() - render_start
+                progress_callback((frame_num + 1) / total_frames * 0.9)
 
         if progress_callback:
-            progress_callback(0.85)
+            progress_callback(0.95)
 
-        encoder_name, encode_elapsed = encode_frame_sequence(
-            frame_pattern=frame_pattern,
-            fps=fps,
-            audio_path=audio_path,
-            audio_start=audio_start,
-            duration=duration,
-            output_path=output_path,
-            render_settings=render_settings,
-        )
+        encoder_name, _encode_elapsed = encoder.finish()
+    except Exception:
+        encoder.abort()
+        raise
 
     total_elapsed = time.perf_counter() - render_start
     device_label = get_cuda_device_name() or "CUDA"
@@ -541,8 +555,7 @@ def render_video_gpu(
         f"[render_video] renderer=gpu device={device_label} "
         f"{total_frames} frames @ {width}x{height} "
         f"encoder={encoder_name}: "
-        f"frames={frame_elapsed:.1f}s, encode={encode_elapsed:.1f}s, "
-        f"total={total_elapsed:.1f}s"
+        f"total={total_elapsed:.1f}s (streamed encode)"
     )
 
     if progress_callback:

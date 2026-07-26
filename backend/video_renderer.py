@@ -7,11 +7,10 @@ import os
 import math
 import random
 import subprocess
-import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
 from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
@@ -122,46 +121,116 @@ def resolve_render_dimensions(
     return width, height, resampling
 
 
-def encode_frame_sequence(
-    frame_pattern: str,
-    fps: int,
-    audio_path: str,
-    audio_start: float,
-    duration: float,
-    output_path: str,
-    render_settings: RenderSettings,
-) -> Tuple[str, float]:
+class RawFramePipeEncoder:
     """
-    Encode a staged JPEG frame sequence to MP4 with audio.
+    Stream RGB frames into FFmpeg over stdin (no JPEG temp files).
 
-    Returns (encoder_name, encode_elapsed_seconds).
+    Encoding overlaps with frame rendering. Call write_frame() for each frame,
+    then finish() after the last frame.
     """
-    video_encode_args, encoder_name = _ffmpeg_video_encode_args(
-        render_settings.quality, render_settings.preview
-    )
-    ffmpeg_cmd = [
-        "ffmpeg", "-y",
-        "-framerate", str(fps),
-        "-i", frame_pattern,
-        "-ss", str(audio_start),
-        "-t", str(duration),
-        "-i", audio_path,
-        *video_encode_args,
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-shortest",
-        output_path,
-    ]
-    encode_start = time.perf_counter()
-    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-    encode_elapsed = time.perf_counter() - encode_start
-    if result.returncode != 0:
-        error_msg = result.stderr or result.stdout or "Unknown FFmpeg error"
-        raise RuntimeError(
-            f"FFmpeg failed (exit code {result.returncode}): {error_msg}"
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        fps: int,
+        audio_path: str,
+        audio_start: float,
+        duration: float,
+        output_path: str,
+        render_settings: RenderSettings,
+    ):
+        video_encode_args, self.encoder_name = _ffmpeg_video_encode_args(
+            render_settings.quality, render_settings.preview
         )
-    return encoder_name, encode_elapsed
+        self._frame_bytes = width * height * 3
+        self._start = time.perf_counter()
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-s", f"{width}x{height}",
+            "-framerate", str(fps),
+            "-i", "pipe:0",
+            "-ss", str(audio_start),
+            "-t", str(duration),
+            "-i", audio_path,
+            *video_encode_args,
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            output_path,
+        ]
+        self._proc = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        self._stderr_chunks: List[bytes] = []
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, daemon=True
+        )
+        self._stderr_thread.start()
+
+    def _drain_stderr(self) -> None:
+        stderr = self._proc.stderr
+        if stderr is None:
+            return
+        while True:
+            chunk = stderr.read(4096)
+            if not chunk:
+                break
+            self._stderr_chunks.append(chunk)
+
+    def write_frame(self, frame: Image.Image) -> None:
+        """Write one RGB frame to the encoder pipe."""
+        if self._proc.stdin is None:
+            raise RuntimeError("FFmpeg stdin is not available")
+        rgb = frame.convert("RGB")
+        data = rgb.tobytes()
+        if len(data) != self._frame_bytes:
+            raise RuntimeError(
+                f"Frame size mismatch: got {len(data)} bytes, "
+                f"expected {self._frame_bytes}"
+            )
+        try:
+            self._proc.stdin.write(data)
+        except BrokenPipeError as exc:
+            self._stderr_thread.join(timeout=5)
+            err = b"".join(self._stderr_chunks).decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"FFmpeg pipe broke while writing frames: {err or exc}"
+            ) from exc
+
+    def finish(self) -> Tuple[str, float]:
+        """Close the pipe and wait for FFmpeg. Returns (encoder_name, elapsed_s)."""
+        if self._proc.stdin is not None:
+            try:
+                self._proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        returncode = self._proc.wait()
+        self._stderr_thread.join(timeout=5)
+        elapsed = time.perf_counter() - self._start
+        if returncode != 0:
+            err = b"".join(self._stderr_chunks).decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"FFmpeg failed (exit code {returncode}): {err or 'Unknown FFmpeg error'}"
+            )
+        return self.encoder_name, elapsed
+
+    def abort(self) -> None:
+        """Best-effort cleanup if rendering fails mid-stream."""
+        try:
+            if self._proc.stdin is not None and not self._proc.stdin.closed:
+                self._proc.stdin.close()
+        except Exception:
+            pass
+        if self._proc.poll() is None:
+            self._proc.kill()
+            self._proc.wait(timeout=10)
 
 
 @dataclass
@@ -184,7 +253,22 @@ class ParticleSystem:
     def __init__(self, particle_sprite: Optional[Image.Image] = None):
         self.particles: List[Particle] = []
         self.particle_sprite = particle_sprite
-    
+        self._sprite_cache: Dict[int, Image.Image] = {}
+
+    def _resized_sprite(self, diameter: int) -> Image.Image:
+        """Return a cached BILINEAR resize of the particle sprite."""
+        cached = self._sprite_cache.get(diameter)
+        if cached is not None:
+            return cached
+        assert self.particle_sprite is not None
+        sprite = self.particle_sprite.resize(
+            (diameter, diameter), Image.Resampling.BILINEAR,
+        )
+        if sprite.mode != "RGBA":
+            sprite = sprite.convert("RGBA")
+        self._sprite_cache[diameter] = sprite
+        return sprite
+
     def spawn_burst_from_bounds(
         self,
         bounds_x: float, bounds_y: float,
@@ -268,11 +352,7 @@ class ParticleSystem:
                 continue
 
             if self.particle_sprite is not None:
-                sprite = self.particle_sprite.resize(
-                    (r * 2, r * 2), Image.Resampling.LANCZOS,
-                )
-                if sprite.mode != "RGBA":
-                    sprite = sprite.convert("RGBA")
+                sprite = self._resized_sprite(r * 2)
                 alpha_mask = sprite.split()[3].point(lambda a, al=alpha: int(a * al / 255))
                 if alpha_mask.getextrema()[1] < 8:
                     draw = ImageDraw.Draw(overlay)
@@ -342,11 +422,20 @@ def render_video(
         f"triggers={len(burst.triggers) if burst.enabled else 0} sprite={sprite_info}"
     )
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        frame_pattern = os.path.join(temp_dir, "frame_%06d.jpg")
-        render_start = time.perf_counter()
-        logged_particle_frame = False
+    render_start = time.perf_counter()
+    logged_particle_frame = False
+    encoder = RawFramePipeEncoder(
+        width=width,
+        height=height,
+        fps=fps,
+        audio_path=audio_path,
+        audio_start=audio_start,
+        duration=duration,
+        output_path=output_path,
+        render_settings=render_settings,
+    )
 
+    try:
         for frame_num in range(total_frames):
             time_sec = frame_num / fps
             dt = 1.0 / fps
@@ -369,32 +458,24 @@ def render_video(
                 )
                 logged_particle_frame = True
 
-            frame.convert("RGB").save(frame_pattern % frame_num, "JPEG", quality=95)
+            encoder.write_frame(frame)
 
             if progress_callback:
-                progress_callback((frame_num + 1) / total_frames * 0.8)
-
-        frame_elapsed = time.perf_counter() - render_start
+                progress_callback((frame_num + 1) / total_frames * 0.9)
 
         if progress_callback:
-            progress_callback(0.85)
+            progress_callback(0.95)
 
-        encoder_name, encode_elapsed = encode_frame_sequence(
-            frame_pattern=frame_pattern,
-            fps=fps,
-            audio_path=audio_path,
-            audio_start=audio_start,
-            duration=duration,
-            output_path=output_path,
-            render_settings=render_settings,
-        )
+        encoder_name, _encode_elapsed = encoder.finish()
+    except Exception:
+        encoder.abort()
+        raise
 
     total_elapsed = time.perf_counter() - render_start
     print(
         f"[render_video] renderer=cpu {total_frames} frames @ {width}x{height} "
         f"encoder={encoder_name}: "
-        f"frames={frame_elapsed:.1f}s, encode={encode_elapsed:.1f}s, "
-        f"total={total_elapsed:.1f}s"
+        f"total={total_elapsed:.1f}s (streamed encode)"
     )
 
     if progress_callback:

@@ -1,3 +1,10 @@
+# GPU export extras (optional).
+# On Windows + NVIDIA, install CUDA wheels from pytorch.org — a plain
+# `pip install torch` often installs a CPU-only build, which silently disables GPU export.
+#
+# Example (CUDA 12.4 — check https://pytorch.org for current indexes):
+#   pip install -r requirements-gpu.txt --index-url https://download.pytorch.org/whl/cu124
+#
 -r requirements.txt
 torch>=2.0
 torchvision>=0.15
