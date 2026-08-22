@@ -44,13 +44,40 @@ PREVIEW_DIMENSIONS = {
 PREVIEW_REFERENCE_WIDTH = 540
 
 _nvenc_available_cache: Optional[bool] = None
+_NVIDIA_DEVICE = "/dev/nvidia0"
+_LIBCUDA_NAMES = ("libcuda.so.1", "nvcuda.dll")
+
+
+def _cuda_present() -> bool:
+    """True if an NVIDIA GPU / CUDA driver is actually usable.
+
+    FFmpeg may list h264_nvenc even when libcuda.so.1 and /dev/nvidia0
+    are missing (CPU-only Linux / Cursor boxes). Compiled-in encoder
+    names are not enough.
+    """
+    if os.path.exists(_NVIDIA_DEVICE):
+        return True
+    try:
+        import ctypes
+        for name in _LIBCUDA_NAMES:
+            try:
+                ctypes.CDLL(name)
+                return True
+            except OSError:
+                continue
+    except Exception:
+        return False
+    return False
 
 
 def _nvenc_available() -> bool:
-    """Check once whether FFmpeg was built with h264_nvenc."""
+    """True only if FFmpeg has h264_nvenc *and* CUDA is actually present."""
     global _nvenc_available_cache
     if _nvenc_available_cache is not None:
         return _nvenc_available_cache
+    if not _cuda_present():
+        _nvenc_available_cache = False
+        return False
     try:
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
