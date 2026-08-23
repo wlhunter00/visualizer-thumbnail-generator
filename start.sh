@@ -49,6 +49,17 @@ if ! command -v ffmpeg &> /dev/null; then
     exit 1
 fi
 
+# Load OPENAI_API_KEY for auto-suggest without printing the secret.
+# Uses env / backend/.env if a real key is already defined; otherwise
+# tries the Music Content connector secret JSON.
+if [ -f "$SCRIPT_DIR/scripts/load_openai_key.py" ]; then
+    _openai_eval="$(python3 "$SCRIPT_DIR/scripts/load_openai_key.py" --eval)" || true
+    if [ -n "$_openai_eval" ]; then
+        eval "$_openai_eval"
+    fi
+    unset _openai_eval
+fi
+
 # Setup Python virtual environment if needed
 if [ ! -d "$SCRIPT_DIR/backend/.venv" ]; then
     echo -e "${BLUE}Setting up Python virtual environment...${NC}"

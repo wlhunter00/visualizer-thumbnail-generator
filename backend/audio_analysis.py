@@ -16,6 +16,15 @@ from scipy.signal import find_peaks
 _audio_cache: dict = {}
 
 
+def coerce_tempo(tempo) -> float:
+    """Coerce librosa beat_track tempo to a Python float.
+
+    librosa.beat.beat_track may return tempo as a length-1 ndarray.
+    ``float(ndarray)`` only works for 0-d arrays and raises TypeError otherwise.
+    """
+    return float(np.asarray(tempo).reshape(-1)[0])
+
+
 @dataclass
 class AudioFeatures:
     """Container for all extracted audio features."""
@@ -186,7 +195,7 @@ def analyze_audio(audio_path: str, start_time: float = 0.0, duration: float = No
     return AudioFeatures(
         duration=actual_duration,
         sample_rate=sr,
-        tempo=float(tempo) if isinstance(tempo, np.ndarray) else tempo,
+        tempo=coerce_tempo(tempo),
         beat_times=beat_times,
         beat_strengths=beat_strengths,
         onset_times=onset_times,
