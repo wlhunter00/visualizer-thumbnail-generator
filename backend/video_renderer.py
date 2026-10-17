@@ -211,12 +211,10 @@ class RawFramePipeEncoder:
                 break
             self._stderr_chunks.append(chunk)
 
-    def write_frame(self, frame: Image.Image) -> None:
-        """Write one RGB frame to the encoder pipe."""
+    def write_rgb_bytes(self, data: bytes) -> None:
+        """Write packed RGB24 bytes (width*height*3) to the encoder pipe."""
         if self._proc.stdin is None:
             raise RuntimeError("FFmpeg stdin is not available")
-        rgb = frame.convert("RGB")
-        data = rgb.tobytes()
         if len(data) != self._frame_bytes:
             raise RuntimeError(
                 f"Frame size mismatch: got {len(data)} bytes, "
@@ -230,6 +228,11 @@ class RawFramePipeEncoder:
             raise RuntimeError(
                 f"FFmpeg pipe broke while writing frames: {err or exc}"
             ) from exc
+
+    def write_frame(self, frame: Image.Image) -> None:
+        """Write one RGB frame to the encoder pipe."""
+        rgb = frame.convert("RGB")
+        self.write_rgb_bytes(rgb.tobytes())
 
     def finish(self) -> Tuple[str, float]:
         """Close the pipe and wait for FFmpeg. Returns (encoder_name, elapsed_s)."""
